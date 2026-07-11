@@ -33,7 +33,11 @@ class AchievementsService:
                 appid=g["appid"],
                 name=g["name"],
                 playtime_minutes=g["playtime_forever"],
-                icon_url=_ICON_URL.format(appid=g["appid"], hash=g["img_icon_url"]),
+                icon_url=(
+                    _ICON_URL.format(appid=g["appid"], hash=g["img_icon_url"])
+                    if g.get("img_icon_url")
+                    else None
+                ),
             )
             for g in raw
         ]

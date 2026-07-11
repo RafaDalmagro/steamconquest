@@ -66,6 +66,19 @@ async def test_biblioteca_parseada_e_ordenada_por_playtime_decrescente():
     )
 
 
+async def test_jogo_sem_icone_nao_gera_url_quebrada():
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 30, "name": "Sem Ícone", "playtime_forever": 10, "img_icon_url": ""},
+        ]
+    )
+    service = make_service(client)
+
+    games = await service.list_library()
+
+    assert games[0].icon_url is None
+
+
 async def test_ordenacao_por_nome_e_alfabetica():
     client = FakeSteamClient(
         owned_games=[

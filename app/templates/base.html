@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1b2838">
+  <title>{% block title %}Minhas Conquistas Steam{% endblock %}</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, sans-serif;
+      background: #1b2838; color: #c7d5e0;
+      touch-action: manipulation;
+    }
+    a:focus-visible, button:focus-visible { outline: 2px solid #66c0f4; outline-offset: 2px; }
+    header { background: #171a21; padding: 16px 24px; }
+    header a { color: #66c0f4; text-decoration: none; font-weight: 600; }
+    main { max-width: 960px; margin: 0 auto; padding: 24px; }
+    a { color: #66c0f4; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .toolbar a, .filter button {
+      background: #2a475e; color: #c7d5e0; border: none; border-radius: 4px;
+      padding: 6px 12px; text-decoration: none; cursor: pointer; font-size: 14px;
+    }
+    .toolbar a:hover, .filter button:hover { background: #335b7d; }
+    .toolbar a.active, .filter button.active { background: #66c0f4; color: #171a21; }
+    .card {
+      display: flex; align-items: center; gap: 12px; background: #2a475e;
+      border-radius: 6px; padding: 12px; margin-bottom: 8px;
+    }
+    a.card:hover { background: #335b7d; }
+    .card img { width: 32px; height: 32px; border-radius: 4px; flex: none; }
+    .card .meta {
+      margin-left: auto; text-align: right; font-size: 14px; color: #8f98a0;
+      font-variant-numeric: tabular-nums;
+    }
+    .ach { opacity: 1; }
+    .ach.locked { opacity: 0.45; }
+    .progress { height: 8px; background: #1b2838; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+    .progress > span { display: block; height: 100%; background: #66c0f4; }
+  </style>
+</head>
+<body>
+  <header><a href="/">← Biblioteca</a></header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

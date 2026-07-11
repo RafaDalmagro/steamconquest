@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Biblioteca ({{ games | length }} jogos)</h1>
+
+<div class="toolbar">
+  <span>Ordenar por:</span>
+  <a href="/?sort=playtime" class="{{ 'active' if sort == 'playtime' }}">Tempo de jogo</a>
+  <a href="/?sort=name" class="{{ 'active' if sort == 'name' }}">Nome</a>
+  <a href="/?sort=percent" class="{{ 'active' if sort == 'percent' }}">% concluído</a>
+  <a href="/?sort=ach_count" class="{{ 'active' if sort == 'ach_count' }}">Nº de conquistas</a>
+</div>
+
+{% for game in games %}
+<a class="card" href="/game/{{ game.appid }}">
+  {% if game.icon_url %}<img src="{{ game.icon_url }}" alt="" width="32" height="32" loading="lazy">{% endif %}
+  <span>{{ game.name }}</span>
+  <span class="meta">
+    {{ (game.playtime_minutes / 60) | round(1) }} h
+    {% if game.percent is not none %}
+      · {{ game.percent | round(0) | int }}% ({{ game.achieved_count }}/{{ game.total_count }})
+    {% endif %}
+  </span>
+</a>
+{% endfor %}
+{% endblock %}

@@ -5,8 +5,11 @@ Instruções de projeto para o Claude Code. Leia antes de editar.
 ## O que é
 
 App web **pessoal** para acompanhar conquistas, biblioteca e tempo de jogo de
-uma conta Steam. **Single-user**, consulta em **tempo real (sem banco)**, render
-**server-side** com Jinja2.
+uma conta Steam. **Single-user**, consulta em **tempo real (sem banco)**.
+Arquitetura **fullstack**: backend FastAPI expõe **API JSON** sob `/api`; o
+frontend é um **SPA React** (Vite + Tailwind + shadcn/ui) que consome a API via
+**TanStack React Query**. Em produção o FastAPI serve o build estático do
+frontend; em dev o Vite serve o SPA com proxy `/api` → FastAPI.
 
 Escopo fechado na entrevista de arquitetura — não expandir sem pedir:
 - Funcionalidades: biblioteca + playtime; conquistas obtidas × pendentes;
@@ -16,46 +19,75 @@ Escopo fechado na entrevista de arquitetura — não expandir sem pedir:
 
 ## Stack
 
-Python 3.12 · FastAPI · uvicorn · httpx (async) · Jinja2 · pydantic-settings ·
-pytest. Gerenciador: **uv**. Deploy: Docker.
+**Backend:** Python 3.12 · FastAPI · uvicorn · httpx (async) · pydantic-settings ·
+pytest. Gerenciador: **uv**.
+**Frontend:** React 19 · Vite · TypeScript · Tailwind v4 · shadcn/ui (Radix) ·
+TanStack React Query · React Router. Gerenciador: **npm**. Tipos gerados do
+OpenAPI (`openapi-typescript`).
+Deploy: Docker (multi-stage: builda o frontend e o FastAPI serve o `dist`).
 
 ## Comandos
 
 ```bash
-uv sync                                      # instala deps
-uv run uvicorn app.main:app --reload         # dev server (http://localhost:8000)
-uv run pytest                                # testes
-docker compose up --build                    # container
+# Backend (na raiz)
+uv sync                                      # instala deps do backend
+uv run uvicorn app.main:app --reload         # API dev (http://localhost:8000)
+uv run pytest                                # testes do backend
+
+# Frontend (em frontend/)
+npm install                                  # instala deps do frontend
+npm run dev                                  # SPA dev (http://localhost:5173, proxy /api)
+npm run build                                # gera frontend/dist (servido pelo FastAPI)
+npm run test                                 # testes do frontend (Vitest)
+npm run generate:api                         # regenera tipos TS do /openapi.json (backend up)
+
+docker compose up --build                    # app completo em http://localhost:8000
 ```
 
 Terminal alvo: Linux nativo (zsh).
+
+**Fluxo dev:** suba o backend (`uv run uvicorn …`) e, em outro terminal, o front
+(`npm run dev`). Acesse pelo Vite (5173); ele encaminha `/api` para o 8000.
 
 ## Arquitetura — invariante (não quebrar)
 
 Dependências apontam sempre para o domínio. Concretamente:
 
-- `web/` (rotas) **não** importa `httpx` nem conhece a Steam direto.
+- `web/` (rotas) **não** importa `httpx` nem conhece a Steam direto; retorna
+  **modelos de domínio como JSON** (não renderiza HTML).
 - `services/` **não** importa `Request`/`fastapi`.
 - `steam/` é a única camada que fala HTTP com a Steam.
+- **O frontend nunca fala com a Steam** — só com `/api`. O FastAPI é o único
+  gateway da Steam (a `STEAM_API_KEY` nunca chega ao browser).
 
 ```
-app/
+app/                       # backend
 ├── config.py          # Settings via env (segredos)
 ├── core/cache.py      # TTLCache em memória — volátil, NÃO é banco
 ├── steam/             # Infra HTTP (client + exceptions tipadas)
 ├── services/          # Regra de negócio (achievements.py)
-├── schemas/models.py  # Modelos de domínio (pydantic)
-├── web/routes.py      # Rotas + templates
-├── templates/         # base / index / game
-└── main.py            # FastAPI + lifespan (wiring do client/cache/service)
+├── schemas/models.py  # Modelos de domínio (pydantic) = contrato da API
+├── web/routes.py      # Rotas JSON sob /api (list_games, game_detail)
+└── main.py            # FastAPI + lifespan + StaticFiles (serve o SPA em prod)
+
+frontend/                  # SPA React
+├── src/api/           # types.gen.ts (OpenAPI) + client fetch + hooks React Query
+├── src/components/ui/ # componentes shadcn (card, button, tabs, progress…)
+├── src/components/    # GameCard, SortBar, AchievementItem…
+├── src/pages/         # Library, GameDetail
+└── src/lib/           # queryClient, cn()
 ```
 
-Regra prática: lógica nova de negócio vai em `services/`; nova chamada à Steam
-vira um método em `steam/client.py` que retorna dict já desembrulhado ou levanta
-exceção tipada. Rotas só orquestram e renderizam.
+Regra prática (backend): lógica nova de negócio vai em `services/`; nova chamada
+à Steam vira um método em `steam/client.py` que retorna dict desembrulhado ou
+levanta exceção tipada. Rotas só orquestram e retornam o modelo (JSON).
+Regra prática (frontend): dado novo da API → método em `src/api/client.ts` +
+hook React Query; a UI consome o hook. Após mudar modelos no backend, rode
+`npm run generate:api` para ressincronizar os tipos.
 
-Wiring é feito no `lifespan` (`main.py`): `httpx.AsyncClient` + `TTLCache` +
+Wiring do backend no `lifespan` (`main.py`): `httpx.AsyncClient` + `TTLCache` +
 `AchievementsService` ficam em `app.state`. Injeção por `Depends(get_service)`.
+Contrato de erro: exceções tipadas → `JSONResponse({"detail": …})` com 404/429/502.
 
 ## Integração Steam
 
@@ -98,10 +130,11 @@ o catálogo global, não a conta).
 
 ## Segurança (não negociável)
 
-- `STEAM_API_KEY` e `STEAM_ID` só via env/`.env`. Nunca em template, resposta,
-  commit ou log. `.env` está no `.gitignore`.
-- A key trafega apenas na querystring server-side. Não habilitar log `DEBUG` do
-  `httpx` (vaza a URL com a chave).
+- `STEAM_API_KEY` e `STEAM_ID` só via env/`.env`. Nunca em resposta da API,
+  bundle/resposta do frontend, commit ou log. `.env` está no `.gitignore`.
+- A key trafega apenas na querystring server-side (backend → Steam). O frontend
+  só fala com `/api`, jamais com a Steam. Não habilitar log `DEBUG` do `httpx`
+  (vaza a URL com a chave).
 
 ## Antes de propor mudanças grandes
 

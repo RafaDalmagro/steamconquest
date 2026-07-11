@@ -12,8 +12,11 @@ tags: [architecture, design, app, steam, fastapi]
 Especificação de comportamento de um app web **pessoal** (single-user) para
 acompanhar biblioteca, tempo de jogo e progresso de conquistas de **uma** conta
 Steam. A consulta é em **tempo real** contra a Steam Web API (**sem banco de
-dados**), com renderização **server-side** via Jinja2. Esta spec é a fonte de
-verdade da fase SDD e precede o PLAN e o ciclo RED/GREEN/REFACTOR.
+dados**). Arquitetura **fullstack**: backend FastAPI expõe **API JSON** sob
+`/api`; frontend é um **SPA React** (Vite + Tailwind + shadcn/ui) consumindo a
+API via **TanStack React Query**. Em produção o FastAPI serve o build estático
+do SPA; em dev o Vite serve o front com proxy `/api` → FastAPI. Esta spec é a
+fonte de verdade da fase SDD e precede o PLAN e o ciclo RED/GREEN/REFACTOR.
 
 ## 1. Purpose & Scope
 
@@ -115,10 +118,14 @@ fazer perguntas.
 
 | Método | Rota | Query | Resposta |
 |---|---|---|---|
-| GET | `/` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`} | HTML (index) |
-| GET | `/game/{appid}` | — | HTML (detalhe) |
+| GET | `/api/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`} | JSON `list[Game]` |
+| GET | `/api/games/{appid}` | — | JSON `GameDetail` |
 
-- `sort` ausente/ inválido ⇒ trata como `playtime` (default).
+- `sort` ausente/inválido ⇒ trata como `playtime` (default).
+- Paths não-`/api` são servidos pelo SPA (StaticFiles + fallback p/ `index.html`,
+  para deep-link de rotas do React Router como `/game/{appid}`).
+- O filtro por status (detalhe) e a exibição/loading são **client-side** no SPA
+  (React Query dá o estado de carregamento; o filtro roda no navegador).
 
 ### Steam Web API (fonte de verdade: `Steam_Web_API_Documentation.md`)
 
@@ -159,11 +166,14 @@ class GameDetail(BaseModel):
 
 ### Mapeamento de erro → HTTP
 
+Erros mapeados retornam `JSONResponse({"detail": "<mensagem pt-BR>"}, status)`;
+o SPA exibe a mensagem do campo `detail`.
+
 | Condição | Exceção | Status app |
 |---|---|---|
-| Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | 404 (detalhe) / página de erro amigável |
-| 429 persistente | `SteamRateLimitError` | 429 |
-| 5xx persistente / falha de upstream | `SteamUnavailableError` | 502 |
+| Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | 404 JSON `{detail}` |
+| 429 persistente | `SteamRateLimitError` | 429 JSON `{detail}` |
+| 5xx persistente / falha de upstream | `SteamUnavailableError` | 502 JSON `{detail}` |
 | Jogo sem stats (`playerstats.success:false`) | — | 200 com `supports_achievements=False` |
 
 ## 5. Acceptance Criteria

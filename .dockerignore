@@ -7,3 +7,5 @@ __pycache__/
 tests/
 spec/
 *.md
+frontend/node_modules/
+frontend/dist/

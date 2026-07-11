@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import create_app
 from app.schemas.models import Achievement, Game, GameDetail
@@ -8,7 +9,6 @@ from app.errors import (
     SteamUnavailableError,
 )
 from app.web.routes import get_service
-
 
 STEAMID = "76561197960287930"  # SteamID64 de 17 dígitos
 
@@ -181,3 +181,21 @@ def test_steam_indisponivel_retorna_502_json():
 
     assert resp.status_code == 502
     assert "detail" in resp.json()
+
+
+def test_cors_permite_origem_configurada(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("STEAM_API_KEY", "teste")
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.exemplo.com/")
+
+    client = client_with(FakeService(games=[]))
+
+    resp = client.options(
+        f"/api/users/{STEAMID}/games",
+        headers={
+            "Origin": "https://app.exemplo.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://app.exemplo.com"

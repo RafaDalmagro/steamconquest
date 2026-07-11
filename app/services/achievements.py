@@ -12,6 +12,11 @@ _ICON_URL = (
 OWNED_TTL = 300
 ACH_TTL = 300
 SCHEMA_TTL = 86_400
+GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
+# [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
+# não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
+# retenta em ~1h para se recuperar sozinho.
+GENRES_MISS_TTL = 3_600
 
 
 class AchievementsService:
@@ -26,8 +31,10 @@ class AchievementsService:
         self._cache = cache
         self._concurrency = concurrency
 
-    async def list_library(self, sort: str = "playtime") -> list[Game]:
-        raw = await self._owned_games()
+    async def list_library(
+        self, steamid: str, sort: str = "playtime", group: str | None = None
+    ) -> list[Game]:
+        raw = await self._owned_games(steamid)
         games = [
             Game(
                 appid=g["appid"],
@@ -42,12 +49,14 @@ class AchievementsService:
             for g in raw
         ]
         if sort in ("percent", "ach_count"):
-            await self._fill_counts(games)
+            await self._fill_counts(steamid, games)
+        if group == "genre":
+            await self._fill_genres(games)
         _sort(games, sort)
         return games
 
-    async def game_detail(self, appid: int) -> GameDetail:
-        player = await self._client.get_player_achievements(appid)
+    async def game_detail(self, steamid: str, appid: int) -> GameDetail:
+        player = await self._client.get_player_achievements(steamid, appid)
         schema = await self._schema(appid)
         name = schema.get("gameName", "")
 
@@ -91,21 +100,22 @@ class AchievementsService:
             achievements=achievements,
         )
 
-    async def _owned_games(self) -> list[dict]:
-        cached = self._cache.get("owned_games")
+    async def _owned_games(self, steamid: str) -> list[dict]:
+        key = f"owned_games:{steamid}"
+        cached = self._cache.get(key)
         if cached is not None:
             return cached
-        raw = await self._client.get_owned_games()
-        self._cache.set("owned_games", raw, OWNED_TTL)
+        raw = await self._client.get_owned_games(steamid)
+        self._cache.set(key, raw, OWNED_TTL)
         return raw
 
-    async def _fill_counts(self, games: list[Game]) -> None:
+    async def _fill_counts(self, steamid: str, games: list[Game]) -> None:
         sem = asyncio.Semaphore(self._concurrency)
 
         async def fill(game: Game) -> None:
             async with sem:
                 try:
-                    counts = await self._ach_counts(game.appid)
+                    counts = await self._ach_counts(steamid, game.appid)
                 except SteamError:
                     return  # best-effort: um jogo que falha fica sem %, não quebra a página
             if counts is None:
@@ -117,12 +127,32 @@ class AchievementsService:
 
         await asyncio.gather(*(fill(g) for g in games))
 
-    async def _ach_counts(self, appid: int) -> tuple[int, int] | None:
-        key = f"ach_counts:{appid}"
+    async def _fill_genres(self, games: list[Game]) -> None:
+        # ponytail: cache volátil; cache persistente por appid se o cold-start
+        # em biblioteca grande incomodar (ver plano).
+        sem = asyncio.Semaphore(self._concurrency)
+
+        async def fill(game: Game) -> None:
+            async with sem:
+                game.genres = await self._app_genres(game.appid)
+
+        await asyncio.gather(*(fill(g) for g in games))
+
+    async def _app_genres(self, appid: int) -> list[str]:
+        key = f"genres:{appid}"
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        achievements = await self._client.get_player_achievements(appid)
+        genres = await self._client.get_app_genres(appid)
+        self._cache.set(key, genres, GENRES_TTL if genres else GENRES_MISS_TTL)
+        return genres
+
+    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int] | None:
+        key = f"ach_counts:{steamid}:{appid}"
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        achievements = await self._client.get_player_achievements(steamid, appid)
         if not achievements:
             return None
         achieved = sum(1 for a in achievements if a.get("achieved") == 1)

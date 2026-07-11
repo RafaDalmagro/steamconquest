@@ -5,7 +5,8 @@ class Game(BaseModel):
     """Jogo da biblioteca para exibição na index.
 
     `percent`/`achieved_count`/`total_count` só são preenchidos quando a
-    ordenação exige conquistas (sort=percent/ach_count).
+    ordenação exige conquistas (sort=percent/ach_count). `genres` só é
+    preenchido quando `group=genre`.
     """
 
     appid: int
@@ -15,6 +16,7 @@ class Game(BaseModel):
     percent: float | None = None
     achieved_count: int | None = None
     total_count: int | None = None
+    genres: list[str] = []
 
 
 class Achievement(BaseModel):

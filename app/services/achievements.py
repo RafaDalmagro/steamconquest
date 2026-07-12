@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, Callable
 
 from app.core.cache import TTLCache
 from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
@@ -146,14 +147,26 @@ class AchievementsService:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
         await self.player_summary(steamid)
 
+    async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch):
+        """Busca no cache; no miss, chama `fetch` e guarda o resultado.
+
+        `ttl` pode depender do valor (gênero encontrado dura mais que gênero
+        ausente). `None` nunca é cacheado: é o próprio sinal de miss do TTLCache.
+        """
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        value = await fetch()
+        if value is not None:
+            self._cache.set(key, value, ttl(value) if callable(ttl) else ttl)
+        return value
+
     async def _owned_games(self, steamid: str) -> list[dict]:
-        key = f"owned_games:{steamid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        raw = await self._client.get_owned_games(steamid)
-        self._cache.set(key, raw, OWNED_TTL)
-        return raw
+        return await self._cached(
+            f"owned_games:{steamid}",
+            OWNED_TTL,
+            lambda: self._client.get_owned_games(steamid),
+        )
 
     async def _fill_counts(self, steamid: str, games: list[Game]) -> None:
         sem = asyncio.Semaphore(self._concurrency)
@@ -185,35 +198,26 @@ class AchievementsService:
         await asyncio.gather(*(fill(g) for g in games))
 
     async def _app_genres(self, appid: int) -> list[str]:
-        key = f"genres:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        genres = await self._client.get_app_genres(appid)
-        self._cache.set(key, genres, GENRES_TTL if genres else GENRES_MISS_TTL)
-        return genres
+        return await self._cached(
+            f"genres:{appid}",
+            lambda genres: GENRES_TTL if genres else GENRES_MISS_TTL,
+            lambda: self._client.get_app_genres(appid),
+        )
 
     async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int] | None:
-        key = f"ach_counts:{steamid}:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        achievements = await self._client.get_player_achievements(steamid, appid)
-        if not achievements:
-            return None
-        achieved = sum(1 for a in achievements if a.get("achieved") == 1)
-        counts = (achieved, len(achievements))
-        self._cache.set(key, counts, ACH_TTL)
-        return counts
+        async def contar() -> tuple[int, int] | None:
+            achievements = await self._client.get_player_achievements(steamid, appid)
+            if not achievements:
+                return None  # jogo sem conquistas: nada a cachear
+            achieved = sum(1 for a in achievements if a.get("achieved") == 1)
+            return achieved, len(achievements)
+
+        return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
 
     async def _schema(self, appid: int) -> dict:
-        key = f"schema:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        schema = await self._client.get_schema(appid)
-        self._cache.set(key, schema, SCHEMA_TTL)
-        return schema
+        return await self._cached(
+            f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
+        )
 
 
 def _percent(achieved: int, total: int) -> float:

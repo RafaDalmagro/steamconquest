@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +13,8 @@ class Settings(BaseSettings):
     )
 
     steam_api_key: str
+    # dev é o default seguro: a máquina local não precisa declarar nada.
+    environment: Literal["dev", "prod"] = "dev"
     cors_origins: str = ""
     steam_concurrency: int = 5
     http_timeout: float = 10.0

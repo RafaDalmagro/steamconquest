@@ -60,14 +60,26 @@ class SPAStaticFiles(StaticFiles):
 
 def create_app() -> FastAPI:
     settings = Settings()
-    app = FastAPI(title="Conquistas Steam", lifespan=lifespan)
-    cors_origins = _parse_cors_origins(settings.cors_origins)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins,
-        allow_methods=["GET"],
-        allow_headers=["Accept", "Content-Type"],
+    prod = settings.environment == "prod"
+    app = FastAPI(
+        title="Conquistas Steam",
+        lifespan=lifespan,
+        # Em prod a API fica exposta na internet: sem docs nem schema público.
+        # Em dev seguem ativos — `npm run generate:api` lê o /openapi.json.
+        docs_url=None if prod else "/docs",
+        redoc_url=None if prod else "/redoc",
+        openapi_url=None if prod else "/openapi.json",
     )
+    cors_origins = _parse_cors_origins(settings.cors_origins)
+    if cors_origins:
+        # Só existe no deploy split (SPA na Vercel × API em outro host). Em dev o
+        # proxy do Vite deixa tudo same-origin e nenhum CORS é necessário.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["GET"],
+            allow_headers=["Accept", "Content-Type"],
+        )
     app.include_router(router)
     register_error_handlers(app)
     # /api tem precedência (registrado antes). Em produção o build estático é

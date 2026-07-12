@@ -4,4 +4,9 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      # O compose sobe a imagem de produção (mesma do Dockerfile do deploy):
+      # sem /docs, SPA embarcado, same-origin. Para dev use `uv run uvicorn`.
+      # Precede o env_file — o ENVIRONMENT=dev do .env local não vaza pra cá.
+      ENVIRONMENT: prod
     restart: unless-stopped

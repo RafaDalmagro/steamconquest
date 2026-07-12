@@ -41,13 +41,30 @@ npm run build                                # gera frontend/dist (servido pelo 
 npm run test                                 # testes do frontend (Vitest)
 npm run generate:api                         # regenera tipos TS do /openapi.json (backend up)
 
-docker compose up --build                    # app completo em http://localhost:8000
+docker compose up --build                    # app completo (ENVIRONMENT=prod) em :8000
 ```
 
 Terminal alvo: Linux nativo (zsh).
 
 **Fluxo dev:** suba o backend (`uv run uvicorn …`) e, em outro terminal, o front
 (`npm run dev`). Acesse pelo Vite (5173); ele encaminha `/api` para o 8000.
+
+## Ambientes (DEV × PROD)
+
+Config só por env (12-factor). Backend lê `.env` na raiz; frontend lê
+`frontend/.env` (só `VITE_*` chega ao bundle — e o bundle é **público**).
+
+- `ENVIRONMENT=dev|prod` (default `dev`). Em `prod`, `create_app()` desliga
+  `/docs`, `/redoc` e `/openapi.json`. Em dev eles ficam ativos porque
+  `npm run generate:api` lê o schema. Ao adicionar comportamento que difere
+  entre ambientes, ligue-o nesta flag — não crie outra.
+- **Same-origin nos dois ambientes**: dev via proxy do Vite (`vite.config.ts`),
+  prod via rewrite `/api/*` do `frontend/vercel.json` → API hospedada. Logo
+  `CORS_ORIGINS` e `VITE_API_BASE_URL` ficam **vazios**; o middleware de CORS só
+  é registrado quando `CORS_ORIGINS` não é vazio. Se mudar o host da API,
+  atualize o rewrite do `vercel.json` — não parta para CORS por reflexo.
+- Deploy: SPA na Vercel (root `frontend/`), API a partir do `Dockerfile`
+  (`STEAM_API_KEY` e `ENVIRONMENT=prod` no painel do host, nunca commitados).
 
 ## Arquitetura — invariante (não quebrar)
 

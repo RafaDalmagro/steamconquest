@@ -28,6 +28,7 @@ class FakeSteamClient:
         schemas=None,
         genres=None,
         summary=None,
+        global_pct=None,
         delay=0.0,
     ):
         self._owned = owned_games if owned_games is not None else []  # list | Exception
@@ -35,9 +36,11 @@ class FakeSteamClient:
         self._schemas = schemas or {}  # appid -> dict
         self._genres = genres or {}  # appid -> list[str] | Exception
         self._summary = summary if summary is not None else {}  # dict | Exception
+        self._global = global_pct or {}  # appid -> dict[str, float] | Exception
         self._delay = delay
         self.ach_calls: list[int] = []
         self.genre_calls: list[int] = []
+        self.global_calls: list[int] = []
         self.owned_calls: list[str] = []  # steamids que buscaram a biblioteca
         self.summary_calls: list[str] = []
         self._active = 0
@@ -76,6 +79,15 @@ class FakeSteamClient:
         # Contrato do client real: best-effort, sempre lista (nunca levanta).
         self.genre_calls.append(appid)
         return self._genres.get(appid, [])
+
+    async def get_global_achievement_percentages(self, appid):
+        # Ao contrário dos gêneros, o client real *levanta* aqui (passa pelo
+        # _get()): quem absorve a falha é o service.
+        self.global_calls.append(appid)
+        val = self._global.get(appid, {})
+        if isinstance(val, Exception):
+            raise val
+        return val
 
 
 def make_service(client, concurrency=5):
@@ -136,6 +148,28 @@ async def test_playtime_recente_so_aparece_em_quem_jogou():
 
     assert jogado.playtime_2weeks_minutes == 120
     assert parado.playtime_2weeks_minutes is None
+
+
+async def test_ordena_por_ultima_vez_jogado_com_nunca_jogados_no_fim():
+    client = FakeSteamClient(
+        owned_games=[
+            # rtime_last_played 0 (e ausente) significam "nunca jogado", não 1970:
+            # os dois têm de cair no fim, não no topo por serem "mais antigos".
+            {"appid": 10, "name": "Antigo", "playtime_forever": 1, "rtime_last_played": 1_600_000_000},
+            {"appid": 20, "name": "Zerado", "playtime_forever": 1, "rtime_last_played": 0},
+            {"appid": 30, "name": "Recente", "playtime_forever": 1, "rtime_last_played": 1_700_000_000},
+            {"appid": 40, "name": "Ausente", "playtime_forever": 1},
+        ]
+    )
+    service = make_service(client)
+
+    games = await service.list_library(STEAMID, sort="last_played")
+
+    assert [g.appid for g in games][:2] == [30, 10]
+    assert {g.appid for g in games[2:]} == {20, 40}
+    assert games[0].last_played_at == datetime.fromtimestamp(1_700_000_000, UTC)
+    assert all(g.last_played_at is None for g in games[2:])
+    assert client.ach_calls == []  # custo zero: nenhuma chamada além do GetOwnedGames
 
 
 async def test_ordenacao_por_nome_e_alfabetica():
@@ -523,3 +557,75 @@ async def test_detalhe_de_jogo_sem_stats_nao_quebra():
     assert detail.supports_achievements is False
     assert detail.name == "Sem Stats"
     assert detail.achievements == []
+
+
+async def test_detalhe_expoe_a_raridade_global_de_cada_conquista():
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 1}, {"apiname": "B", "achieved": 0}]},
+        schemas={10: {"gameName": "Portal", "achievements": []}},
+        global_pct={10: {"A": 42.7, "B": 4.1}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert {a.apiname: a.global_percent for a in detail.achievements} == {"A": 42.7, "B": 4.1}
+
+
+async def test_conquista_sem_raridade_no_payload_fica_sem_raridade():
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 1}, {"apiname": "SECRETA", "achieved": 0}]},
+        schemas={10: {"gameName": "Portal", "achievements": []}},
+        global_pct={10: {"A": 42.7}},  # a Steam não devolve todas
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    secreta = next(a for a in detail.achievements if a.apiname == "SECRETA")
+    assert secreta.global_percent is None
+
+
+async def test_detalhe_sobrevive_a_raridade_indisponivel():
+    # Jogo sem stats globais devolve 403 → SteamDataUnavailable. Raridade é
+    # decoração: some da tela, mas não pode derrubar o detalhe.
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 1}]},
+        schemas={10: {"gameName": "Portal", "achievements": []}},
+        global_pct={10: SteamDataUnavailable("sem stats globais")},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert detail.supports_achievements is True
+    assert detail.achieved_count == 1
+    assert detail.achievements[0].global_percent is None
+
+
+async def test_raridade_e_cacheada_por_jogo_e_nao_por_jogador():
+    # A chave é global_pct:{appid}: dois jogadores diferentes no mesmo jogo
+    # pagam uma única chamada.
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 1}]},
+        schemas={10: {"gameName": "Portal", "achievements": []}},
+        global_pct={10: {"A": 42.7}},
+    )
+    service = make_service(client)
+
+    await service.game_detail(STEAMID, 10)
+    await service.game_detail("76561197960287931", 10)
+
+    assert client.global_calls == [10]
+
+
+async def test_jogo_sem_conquistas_nao_paga_a_chamada_de_raridade():
+    # Não haveria onde exibir a raridade: buscá-la só queimaria quota (e um
+    # token do bucket) num dado que o branch descarta.
+    client = FakeSteamClient(achievements={10: None}, schemas={10: {"gameName": "Sem Stats"}})
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert detail.supports_achievements is False
+    assert client.global_calls == []

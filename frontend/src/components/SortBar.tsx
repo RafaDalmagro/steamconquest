@@ -6,6 +6,7 @@ export const SORTS: { value: Sort; label: string }[] = [
   { value: "name", label: "Nome" },
   { value: "percent", label: "% concluído" },
   { value: "ach_count", label: "Nº de conquistas" },
+  { value: "last_played", label: "Última vez jogado" },
 ];
 
 export function SortBar({

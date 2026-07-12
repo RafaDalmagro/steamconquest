@@ -4,7 +4,12 @@ export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
 export type PlayerSummary = components["schemas"]["PlayerSummary"];
-export type Sort = "playtime" | "name" | "percent" | "ach_count";
+export type Sort =
+	| "playtime"
+	| "name"
+	| "percent"
+	| "ach_count"
+	| "last_played";
 export type Group = "none" | "genre";
 
 const DEFAULT_API_BASE_URL = "/api";

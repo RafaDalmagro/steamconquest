@@ -68,6 +68,7 @@ def test_lista_jogos_retorna_json():
             "name": "Portal",
             "playtime_minutes": 60,
             "playtime_2weeks_minutes": None,
+            "last_played_at": None,
             "icon_url": None,
             "percent": None,
             "achieved_count": None,
@@ -84,6 +85,15 @@ def test_lista_repassa_o_parametro_sort_ao_servico():
     client.get(f"/api/users/{STEAMID}/games?sort=percent")
 
     assert service.sort_recebido == "percent"
+
+
+def test_lista_aceita_o_sort_por_ultima_vez_jogado():
+    service = FakeService(games=[])
+    client = client_with(service)
+
+    client.get(f"/api/users/{STEAMID}/games?sort=last_played")
+
+    assert service.sort_recebido == "last_played"
 
 
 def test_lista_repassa_o_parametro_group_ao_servico():

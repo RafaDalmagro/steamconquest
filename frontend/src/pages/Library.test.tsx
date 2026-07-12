@@ -255,4 +255,35 @@ describe("Library", () => {
       ).toBeInTheDocument(),
     );
   });
+
+  it("mostra a data da última vez jogada, e nada em quem nunca jogou", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            appid: 10,
+            name: "Portal",
+            playtime_minutes: 480,
+            icon_url: null,
+            // Meio-dia UTC: a data não vira véspera no fuso local do CI.
+            last_played_at: "2024-03-12T12:00:00Z",
+          },
+          {
+            appid: 20,
+            name: "Nunca Jogado",
+            playtime_minutes: 0,
+            icon_url: null,
+            last_played_at: null,
+          },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?sort=last_played");
+
+    expect(await screen.findByText("Jogado em 12/03/2024")).toBeInTheDocument();
+    // Um único card tem data: o "nunca jogado" não inventa uma.
+    expect(screen.queryAllByText(/Jogado em/)).toHaveLength(1);
+  });
 });

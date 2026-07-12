@@ -114,6 +114,32 @@ class SteamClient:
             "achievements": game.get("availableGameStats", {}).get("achievements", []),
         }
 
+    async def get_global_achievement_percentages(self, appid: int) -> dict[str, float]:
+        """Raridade global por `apiname`: % de jogadores que obteve cada conquista.
+
+        O parâmetro é `gameid`, não `appid` — é o único endpoint assim.
+
+        Passa pelo `_get()` (e portanto pelo token bucket) mesmo a key não sendo
+        exigida aqui: é o preço de herdar retry e backoff. Gasta orçamento do
+        bucket sem gastar quota da key — aceitável porque a chamada é cacheada
+        por 24h *por jogo*. Se o teto local começar a barrar o fan-out da
+        biblioteca, é este o candidato a sair do bucket.
+
+        Entrada malformada é ignorada, não levanta: quem chama trata raridade
+        como decoração, e um KeyError aqui derrubaria um detalhe inteiro que já
+        tem tudo que importa.
+        """
+        data = await self._get(
+            "/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/",
+            {"gameid": appid},
+        )
+        achievements = data.get("achievementpercentages", {}).get("achievements", [])
+        return {
+            a["name"]: a["percent"]
+            for a in achievements
+            if "name" in a and "percent" in a
+        }
+
     async def get_app_genres(self, appid: int) -> list[str]:
         """Gêneros de um jogo via storefront (endpoint não-oficial da Steam).
 

@@ -176,4 +176,37 @@ describe("GameDetail", () => {
       ).toBeInTheDocument(),
     );
   });
+
+  it("mostra a raridade global e marca como rara a conquista abaixo de 10%", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComConquistas,
+          achievements: [
+            { ...detailComConquistas.achievements[0], global_percent: 42.7 },
+            { ...detailComConquistas.achievements[1], global_percent: 4.1 },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    expect(await screen.findByText("42,7% dos jogadores")).toBeInTheDocument();
+    expect(screen.getByText("4,1% dos jogadores")).toBeInTheDocument();
+    // Só a de 4,1% é rara; a de 42,7% não.
+    expect(screen.getAllByText("Rara")).toHaveLength(1);
+  });
+
+  it("renderiza normalmente quando a Steam não devolveu raridade", async () => {
+    // global_percent null = jogo sem stats globais. A conquista continua listada.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(detailComConquistas)));
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    expect(await screen.findByText("Conquista A")).toBeInTheDocument();
+    expect(screen.queryByText(/dos jogadores/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Rara")).not.toBeInTheDocument();
+  });
 });

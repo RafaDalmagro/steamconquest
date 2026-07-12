@@ -18,6 +18,13 @@ PROFILE_TTL = 300
 # absorve a rajada de quem marreta o mesmo ID inválido.
 NOT_FOUND_TTL = 60
 SCHEMA_TTL = 86_400
+# Raridade é por *jogo*, não por jogador: a chave é o appid, então o cache é
+# compartilhado por todos os visitantes. O número anda devagar — 24h basta.
+GLOBAL_PCT_TTL = 86_400
+# {} pode ser jogo sem stats globais (permanente) ou falha transitória. Não dá
+# para distinguir, então TTL curto: retenta em ~1h em vez de cachear o vazio por
+# um dia inteiro.
+GLOBAL_PCT_MISS_TTL = 3_600
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
@@ -27,6 +34,9 @@ GENRES_MISS_TTL = 3_600
 # Sentinela de cache negativo: distingue "não existe" (cacheado) de "não está no
 # cache" (None), sem precisar guardar a exceção.
 _NAO_EXISTE = object()
+
+# Piso de ordenação para "nunca jogado" (ver _sort).
+_NUNCA = datetime.min.replace(tzinfo=UTC)
 
 
 class AchievementsService:
@@ -58,6 +68,7 @@ class AchievementsService:
                 name=g["name"],
                 playtime_minutes=g["playtime_forever"],
                 playtime_2weeks_minutes=g.get("playtime_2weeks"),
+                last_played_at=_epoch(g.get("rtime_last_played")),
                 icon_url=(
                     _ICON_URL.format(appid=g["appid"], hash=g["img_icon_url"])
                     if g.get("img_icon_url")
@@ -102,23 +113,26 @@ class AchievementsService:
             # inexistente de conta privada. Pago só no caminho de erro.
             await self._assert_exists(steamid)
             raise
-        schema = await self._schema(appid)
-        name = (
-            schema.get("gameName")
-            or self._name_from_library(steamid, appid)
-            or f"App {appid}"
-        )
-
         if not player:
+            # Jogo sem conquistas não paga a chamada de raridade: não haveria
+            # onde exibi-la.
+            schema = await self._schema(appid)
             return GameDetail(
                 appid=appid,
-                name=name,
+                name=self._name(schema, steamid, appid),
                 supports_achievements=False,
                 achieved_count=0,
                 total_count=0,
                 percent=0.0,
                 achievements=[],
             )
+
+        # Independentes entre si: em paralelo o cold-start do detalhe custa uma
+        # ida à Steam, não duas.
+        schema, raridade = await asyncio.gather(
+            self._schema(appid), self._global_percentages(appid)
+        )
+        name = self._name(schema, steamid, appid)
 
         meta = {a["name"]: a for a in schema.get("achievements", [])}
         achievements: list[Achievement] = []
@@ -135,7 +149,8 @@ class AchievementsService:
                     description=m.get("description"),
                     icon_url=m.get("icon") if is_achieved else m.get("icongray"),
                     achieved=is_achieved,
-                    unlocked_at=_unlocked_at(entry) if is_achieved else None,
+                    unlocked_at=_epoch(entry.get("unlocktime")) if is_achieved else None,
+                    global_percent=raridade.get(entry["apiname"]),
                 )
             )
 
@@ -148,6 +163,14 @@ class AchievementsService:
             total_count=total,
             percent=_percent(achieved_count, total),
             achievements=achievements,
+        )
+
+    def _name(self, schema: dict, steamid: str, appid: int) -> str:
+        """Nome do jogo com fallback triplo — jogo sem schema não tem `gameName`."""
+        return (
+            schema.get("gameName")
+            or self._name_from_library(steamid, appid)
+            or f"App {appid}"
         )
 
     def _name_from_library(self, steamid: str, appid: int) -> str:
@@ -231,15 +254,38 @@ class AchievementsService:
 
         return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
 
+    async def _global_percentages(self, appid: int) -> dict[str, float]:
+        """Raridade por `apiname`. Best-effort: falha vira {}, nunca propaga.
+
+        Jogo sem stats globais devolve 403 (⇒ `SteamDataUnavailable`), e um 429
+        ou 5xx aqui não pode derrubar um detalhe que já tem tudo que importa. A
+        raridade é decoração — mesma postura do fan-out em `_fill_counts`.
+        """
+
+        async def buscar() -> dict[str, float]:
+            try:
+                return await self._client.get_global_achievement_percentages(appid)
+            except SteamError:
+                return {}
+
+        return await self._cached(
+            f"global_pct:{appid}",
+            lambda pct: GLOBAL_PCT_TTL if pct else GLOBAL_PCT_MISS_TTL,
+            buscar,
+        )
+
     async def _schema(self, appid: int) -> dict:
         return await self._cached(
             f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
         )
 
 
-def _unlocked_at(entry: dict) -> datetime | None:
-    """Epoch da Steam → datetime UTC. `0` significa "sem data", não 1970."""
-    ts = entry.get("unlocktime")
+def _epoch(ts: int | None) -> datetime | None:
+    """Epoch da Steam → datetime UTC. `0` significa "sem data", não 1970.
+
+    Vale para `unlocktime` (conquista antiga demais) e `rtime_last_played`
+    (nunca jogado): a Steam usa `0` como ausência nos dois.
+    """
     return datetime.fromtimestamp(ts, UTC) if ts else None
 
 
@@ -254,5 +300,10 @@ def _sort(games: list[Game], sort: str) -> None:
         games.sort(key=lambda g: g.percent or 0, reverse=True)
     elif sort == "ach_count":
         games.sort(key=lambda g: g.achieved_count or 0, reverse=True)
+    elif sort == "last_played":
+        # Nunca jogado (None) vai para o fim: com reverse=True, o menor valor
+        # possível é o último. `datetime.min` precisa do tzinfo — os demais são
+        # aware e comparar aware com naive levanta TypeError.
+        games.sort(key=lambda g: g.last_played_at or _NUNCA, reverse=True)
     else:  # playtime (default)
         games.sort(key=lambda g: g.playtime_minutes, reverse=True)

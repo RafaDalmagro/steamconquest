@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { formatarData } from "@/lib/format";
 import type { Game } from "@/api/client";
 
 // Mesma CDN pública de assets já usada pelo icon_url — não envolve a API key.
@@ -68,6 +69,14 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
               </span>
             )}
           </div>
+          {game.last_played_at && (
+            <time
+              dateTime={game.last_played_at}
+              className="text-xs text-muted-foreground tabular-nums"
+            >
+              Jogado em {formatarData(game.last_played_at)}
+            </time>
+          )}
           {percent != null && (
             <Progress value={percent} segmented complete={complete} />
           )}

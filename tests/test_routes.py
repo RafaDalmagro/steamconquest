@@ -2,9 +2,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
-from app.schemas.models import Achievement, Game, GameDetail
+from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -14,13 +15,20 @@ STEAMID = "76561197960287930"  # SteamID64 de 17 dígitos
 
 
 class FakeService:
-    def __init__(self, games=None, detail=None, error=None):
+    def __init__(self, games=None, detail=None, profile=None, error=None):
         self._games = games or []
         self._detail = detail
+        self._profile = profile
         self._error = error
         self.sort_recebido = None
         self.group_recebido = None
         self.steamid_recebido = None
+
+    async def player_summary(self, steamid):
+        self.steamid_recebido = steamid
+        if self._error:
+            raise self._error
+        return self._profile
 
     async def list_library(self, steamid, sort="playtime", group=None):
         self.steamid_recebido = steamid
@@ -130,6 +138,19 @@ def test_steamid_fora_do_padrao_retorna_422():
     assert resp.status_code == 422
 
 
+def test_param_invalido_retorna_detail_string_em_pt_br():
+    # O 422 padrão do FastAPI traz `detail` como array de erros de validação; o
+    # frontend só sabe ler string e acabava exibindo "Erro 422" cru. Todo erro
+    # da API fala a mesma língua: {"detail": "<mensagem pt-BR>"}.
+    client = client_with(FakeService(games=[]))
+
+    resp = client.get(f"/api/users/{STEAMID}/games/nao-e-um-appid")
+
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], str)
+    assert "inválido" in resp.json()["detail"]
+
+
 def test_detalhe_retorna_conquistas_em_json():
     detail = GameDetail(
         appid=10,
@@ -153,6 +174,35 @@ def test_detalhe_retorna_conquistas_em_json():
     assert corpo["percent"] == 50.0
     assert [a["apiname"] for a in corpo["achievements"]] == ["A", "B"]
     assert corpo["achievements"][0]["achieved"] is True
+
+
+def test_perfil_retorna_nome_e_avatar_em_json():
+    profile = PlayerSummary(
+        personaname="Fulano",
+        avatar_url="https://avatars.steamstatic.com/abc_full.jpg",
+    )
+    service = FakeService(profile=profile)
+    client = client_with(service)
+
+    resp = client.get(f"/api/users/{STEAMID}/profile")
+
+    assert resp.status_code == 200
+    assert service.steamid_recebido == STEAMID
+    assert resp.json() == {
+        "personaname": "Fulano",
+        "avatar_url": "https://avatars.steamstatic.com/abc_full.jpg",
+    }
+
+
+def test_perfil_inexistente_retorna_404_com_mensagem_propria():
+    client = client_with(FakeService(error=SteamProfileNotFound("não encontrado")))
+
+    resp = client.get(f"/api/users/{STEAMID}/profile")
+
+    assert resp.status_code == 404
+    # Mensagem distinta da de perfil privado: o usuário precisa saber que o erro
+    # é o ID, não a privacidade da conta.
+    assert "não encontrado" in resp.json()["detail"]
 
 
 def test_perfil_privado_retorna_404_json():

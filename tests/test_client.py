@@ -4,6 +4,7 @@ import pytest
 from app.steam.client import SteamClient
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -88,6 +89,47 @@ async def test_get_schema_desembrulha_available_game_stats():
 
     assert schema["gameName"] == "Portal"
     assert schema["achievements"] == [{"name": "A", "displayName": "Aa"}]
+
+
+async def test_get_player_summary_desembrulha_o_primeiro_player():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "players": [
+                        {
+                            "steamid": "SID",
+                            "personaname": "Fulano",
+                            "avatarfull": "https://avatars.steamstatic.com/abc_full.jpg",
+                        }
+                    ]
+                }
+            },
+        )
+
+    client, http = make_client(handler)
+    try:
+        player = await client.get_player_summary("SID")
+    finally:
+        await http.aclose()
+
+    assert player["personaname"] == "Fulano"
+    assert player["avatarfull"] == "https://avatars.steamstatic.com/abc_full.jpg"
+
+
+async def test_get_player_summary_sem_players_levanta_profile_not_found():
+    # SteamID de 17 dígitos que não existe: a Steam devolve players: [].
+    # Erro próprio, distinto de perfil privado (que devolve o player normalmente).
+    def handler(request):
+        return httpx.Response(200, json={"response": {"players": []}})
+
+    client, http = make_client(handler)
+    try:
+        with pytest.raises(SteamProfileNotFound):
+            await client.get_player_summary("SID")
+    finally:
+        await http.aclose()
 
 
 async def test_429_persistente_levanta_rate_limit_apos_retry():

@@ -15,6 +15,14 @@ class SteamDataUnavailable(SteamError):
     """Dado indisponível: perfil privado ou key inválida (401/403)."""
 
 
+class SteamProfileNotFound(SteamError):
+    """A conta não existe: SteamID bem formado, mas sem perfil na Steam.
+
+    Irmã de `SteamDataUnavailable`, não filha: "não existe" e "existe mas está
+    privado" são causas diferentes e rendem mensagens diferentes ao usuário.
+    """
+
+
 class SteamRateLimitError(SteamError):
     """Rate limit da Steam (429) após esgotar o retry."""
 

@@ -1,7 +1,13 @@
 import asyncio
 
+import pytest
+
 from app.core.cache import TTLCache
-from app.errors import SteamUnavailableError
+from app.errors import (
+    SteamDataUnavailable,
+    SteamProfileNotFound,
+    SteamUnavailableError,
+)
 from app.services.achievements import AchievementsService
 
 STEAMID = "76561197960287930"  # SteamID64 de 17 dígitos usado nos testes
@@ -15,22 +21,38 @@ class FakeSteamClient:
     """
 
     def __init__(
-        self, owned_games=None, achievements=None, schemas=None, genres=None, delay=0.0
+        self,
+        owned_games=None,
+        achievements=None,
+        schemas=None,
+        genres=None,
+        summary=None,
+        delay=0.0,
     ):
-        self._owned = owned_games or []
+        self._owned = owned_games if owned_games is not None else []  # list | Exception
         self._ach = achievements or {}  # appid -> list[dict] | None
         self._schemas = schemas or {}  # appid -> dict
         self._genres = genres or {}  # appid -> list[str] | Exception
+        self._summary = summary if summary is not None else {}  # dict | Exception
         self._delay = delay
         self.ach_calls: list[int] = []
         self.genre_calls: list[int] = []
         self.owned_calls: list[str] = []  # steamids que buscaram a biblioteca
+        self.summary_calls: list[str] = []
         self._active = 0
         self.max_active = 0
 
     async def get_owned_games(self, steamid):
         self.owned_calls.append(steamid)
+        if isinstance(self._owned, Exception):
+            raise self._owned
         return self._owned
+
+    async def get_player_summary(self, steamid):
+        self.summary_calls.append(steamid)
+        if isinstance(self._summary, Exception):
+            raise self._summary
+        return self._summary
 
     async def get_player_achievements(self, steamid, appid):
         self.ach_calls.append(appid)
@@ -288,6 +310,84 @@ async def test_generos_sao_cacheados():
     await service.list_library(STEAMID, group="genre")
 
     assert client.genre_calls == [10]  # gênero é estático: buscado uma única vez
+
+
+async def test_perfil_expoe_nome_e_avatar():
+    client = FakeSteamClient(
+        summary={
+            "steamid": STEAMID,
+            "personaname": "Fulano",
+            "avatarfull": "https://avatars.steamstatic.com/abc_full.jpg",
+        }
+    )
+    service = make_service(client)
+
+    profile = await service.player_summary(STEAMID)
+
+    assert profile.personaname == "Fulano"
+    assert profile.avatar_url == "https://avatars.steamstatic.com/abc_full.jpg"
+
+
+async def test_perfil_e_cacheado_por_steamid():
+    client = FakeSteamClient(summary={"personaname": "Fulano"})
+    service = make_service(client)
+
+    await service.player_summary("11111111111111111")
+    await service.player_summary("11111111111111111")  # cache hit
+    await service.player_summary("22222222222222222")  # id diferente: nova busca
+
+    assert client.summary_calls == ["11111111111111111", "22222222222222222"]
+
+
+async def test_biblioteca_de_conta_inexistente_distingue_de_perfil_privado():
+    # A Steam responde igual nos dois casos (biblioteca indisponível); só o
+    # perfil desempata. Sem isso, quem abre /u/{id-inexistente} direto pela URL
+    # lê "o perfil pode estar privado" — mensagem errada.
+    client = FakeSteamClient(
+        owned_games=SteamDataUnavailable("biblioteca indisponível"),
+        summary=SteamProfileNotFound("perfil não encontrado"),
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamProfileNotFound):
+        await service.list_library(STEAMID)
+
+
+async def test_biblioteca_de_perfil_privado_continua_data_unavailable():
+    # Conta existe (o perfil responde), mas a biblioteca é privada.
+    client = FakeSteamClient(
+        owned_games=SteamDataUnavailable("biblioteca indisponível"),
+        summary={"personaname": "Fulano"},
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamDataUnavailable):
+        await service.list_library(STEAMID)
+
+
+async def test_detalhe_de_conta_inexistente_distingue_de_perfil_privado():
+    # Mesmo caso da biblioteca, na rota do detalhe: link compartilhado com um id
+    # inexistente não pode acusar "perfil privado".
+    client = FakeSteamClient(
+        achievements={220: SteamDataUnavailable("acesso negado")},
+        summary=SteamProfileNotFound("perfil não encontrado"),
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamProfileNotFound):
+        await service.game_detail(STEAMID, 220)
+
+
+async def test_biblioteca_ok_nao_consulta_o_perfil():
+    # A desambiguação é só no caminho de erro: caminho feliz não paga chamada extra.
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Portal", "playtime_forever": 60}]
+    )
+    service = make_service(client)
+
+    await service.list_library(STEAMID)
+
+    assert client.summary_calls == []
 
 
 async def test_detalhe_junta_achievements_com_schema():

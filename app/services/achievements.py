@@ -1,8 +1,8 @@
 import asyncio
 
 from app.core.cache import TTLCache
-from app.errors import SteamError
-from app.schemas.models import Achievement, Game, GameDetail
+from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
+from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
 
 _ICON_URL = (
     "https://media.steampowered.com/steamcommunity/public/images/apps/{appid}/{hash}.jpg"
@@ -11,6 +11,7 @@ _ICON_URL = (
 # TTLs por natureza do dado (segundos). Ver spec REQ-010/CON-010.
 OWNED_TTL = 300
 ACH_TTL = 300
+PROFILE_TTL = 300
 SCHEMA_TTL = 86_400
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
@@ -34,7 +35,14 @@ class AchievementsService:
     async def list_library(
         self, steamid: str, sort: str = "playtime", group: str | None = None
     ) -> list[Game]:
-        raw = await self._owned_games(steamid)
+        try:
+            raw = await self._owned_games(steamid)
+        except SteamDataUnavailable:
+            # A Steam devolve "biblioteca indisponível" tanto para conta que não
+            # existe quanto para perfil privado. Só o perfil desempata — e só
+            # pagamos essa chamada aqui, no caminho de erro.
+            await self._assert_exists(steamid)
+            raise
         games = [
             Game(
                 appid=g["appid"],
@@ -55,8 +63,27 @@ class AchievementsService:
         _sort(games, sort)
         return games
 
+    async def player_summary(self, steamid: str) -> PlayerSummary:
+        key = f"player_summary:{steamid}"
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        raw = await self._client.get_player_summary(steamid)
+        profile = PlayerSummary(
+            personaname=raw.get("personaname", ""),
+            avatar_url=raw.get("avatarfull") or None,
+        )
+        self._cache.set(key, profile, PROFILE_TTL)
+        return profile
+
     async def game_detail(self, steamid: str, appid: int) -> GameDetail:
-        player = await self._client.get_player_achievements(steamid, appid)
+        try:
+            player = await self._client.get_player_achievements(steamid, appid)
+        except SteamDataUnavailable:
+            # Mesma ambiguidade da biblioteca: só o perfil desempata conta
+            # inexistente de conta privada. Pago só no caminho de erro.
+            await self._assert_exists(steamid)
+            raise
         schema = await self._schema(appid)
         name = schema.get("gameName", "")
 
@@ -99,6 +126,10 @@ class AchievementsService:
             percent=_percent(achieved_count, total),
             achievements=achievements,
         )
+
+    async def _assert_exists(self, steamid: str) -> None:
+        """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
+        await self.player_summary(steamid)
 
     async def _owned_games(self, steamid: str) -> list[dict]:
         key = f"owned_games:{steamid}"

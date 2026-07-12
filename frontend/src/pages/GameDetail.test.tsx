@@ -33,6 +33,37 @@ const detailComConquistas = {
 };
 
 describe("GameDetail", () => {
+  it("mostra erro e não chama a API quando o steamid da URL é inválido", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderWithProviders(<App />, "/u/abc/game/10");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Steam ID inválido",
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("mostra a mensagem do backend quando o appid da URL não é um número", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          { detail: "Parâmetro inválido na URL. Confira o Steam ID e o jogo." },
+          false,
+          422,
+        ),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/abc");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Parâmetro inválido na URL",
+    );
+  });
+
   it("filtra por status sem novo request ao servidor", async () => {
     const fetchMock = vi.fn(async () => jsonResponse(detailComConquistas));
     vi.stubGlobal("fetch", fetchMock);

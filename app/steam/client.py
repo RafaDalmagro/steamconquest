@@ -4,6 +4,7 @@ import httpx
 
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -44,6 +45,19 @@ class SteamClient:
         if "games" not in response:
             raise SteamDataUnavailable("biblioteca indisponível (perfil privado?)")
         return response["games"]
+
+    async def get_player_summary(self, steamid: str) -> dict:
+        """Perfil público (nome e avatar). Funciona mesmo com perfil privado."""
+        data = await self._get(
+            "/ISteamUser/GetPlayerSummaries/v2/",
+            {"steamids": steamid},
+        )
+        players = data.get("response", {}).get("players", [])
+        if not players:
+            # players: [] só acontece com SteamID inexistente — perfil privado
+            # continua devolvendo o player (nome e avatar são públicos).
+            raise SteamProfileNotFound("perfil não encontrado")
+        return players[0]
 
     async def get_player_achievements(self, steamid: str, appid: int) -> list[dict] | None:
         data = await self._get(

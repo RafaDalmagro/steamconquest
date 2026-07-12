@@ -136,9 +136,13 @@ o catálogo global, não a conta).
 
 - Type hints em tudo; async em I/O. Sem abstrações especulativas — seguir a doc
   oficial, não inventar camadas.
-- Cache só via `TTLCache` (chaves: `owned_games`, `ach_counts:{appid}`). É
-  volátil e por processo; **não** introduzir banco para "guardar histórico"
-  sem aprovação explícita.
+- Cache só via `TTLCache` (chaves: `owned_games:{steamid}`,
+  `ach_counts:{steamid}:{appid}`, `schema:{appid}`, `genres:{appid}`,
+  `player_summary:{steamid}`). É volátil e por processo; **não** introduzir
+  banco para "guardar histórico" sem aprovação explícita.
+- O `TTLCache` tem **teto de entradas** (`_MAXSIZE`). Não remover: o `steamid`
+  vem da URL (input público), então o espaço de chaves é controlado por quem
+  chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.
 - Concorrência ao montar a biblioteca limitada por `Semaphore`
   (`steam_concurrency`) — manter, é o que evita 429 em conta grande.
 - Comentários e mensagens ao usuário em pt-BR.

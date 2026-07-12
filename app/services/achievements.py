@@ -12,12 +12,19 @@ _ICON_URL = (
 OWNED_TTL = 300
 ACH_TTL = 300
 PROFILE_TTL = 300
+# TTL curto para o "não existe": erra pouco se um perfil novo aparecer, e já
+# absorve a rajada de quem marreta o mesmo ID inválido.
+NOT_FOUND_TTL = 60
 SCHEMA_TTL = 86_400
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
 # retenta em ~1h para se recuperar sozinho.
 GENRES_MISS_TTL = 3_600
+
+# Sentinela de cache negativo: distingue "não existe" (cacheado) de "não está no
+# cache" (None), sem precisar guardar a exceção.
+_NAO_EXISTE = object()
 
 
 class AchievementsService:
@@ -66,9 +73,17 @@ class AchievementsService:
     async def player_summary(self, steamid: str) -> PlayerSummary:
         key = f"player_summary:{steamid}"
         cached = self._cache.get(key)
+        if cached is _NAO_EXISTE:
+            raise SteamProfileNotFound("perfil não encontrado")
         if cached is not None:
             return cached
-        raw = await self._client.get_player_summary(steamid)
+        try:
+            raw = await self._client.get_player_summary(steamid)
+        except SteamProfileNotFound:
+            # Conta inexistente não passa a existir: cacheia o "não" para que
+            # marretar o mesmo ID inválido não queime a quota da STEAM_API_KEY.
+            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
+            raise
         profile = PlayerSummary(
             personaname=raw.get("personaname", ""),
             avatar_url=raw.get("avatarfull") or None,

@@ -339,6 +339,19 @@ async def test_perfil_e_cacheado_por_steamid():
     assert client.summary_calls == ["11111111111111111", "22222222222222222"]
 
 
+async def test_perfil_inexistente_nao_remartela_a_steam():
+    # /profile é dirigido por input público: sem cachear o "não existe", marretar
+    # o mesmo ID inválido queima a quota da STEAM_API_KEY sem teto.
+    client = FakeSteamClient(summary=SteamProfileNotFound("não encontrado"))
+    service = make_service(client)
+
+    for _ in range(3):
+        with pytest.raises(SteamProfileNotFound):
+            await service.player_summary(STEAMID)
+
+    assert client.summary_calls == [STEAMID]  # só a primeira foi à Steam
+
+
 async def test_biblioteca_de_conta_inexistente_distingue_de_perfil_privado():
     # A Steam responde igual nos dois casos (biblioteca indisponível); só o
     # perfil desempata. Sem isso, quem abre /u/{id-inexistente} direto pela URL

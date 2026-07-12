@@ -629,3 +629,21 @@ async def test_jogo_sem_conquistas_nao_paga_a_chamada_de_raridade():
 
     assert detail.supports_achievements is False
     assert client.global_calls == []
+
+
+async def test_detalhe_prefere_o_nome_da_biblioteca_ao_codinome_do_schema():
+    # Caso real (appid 1282100): a biblioteca diz "Remnant II", mas o gameName do
+    # schema é "GFREMP2" — o codinome interno do estúdio. Quem manda é a loja.
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "Remnant II", "playtime_forever": 60, "img_icon_url": "a"}
+        ],
+        achievements={10: [{"apiname": "x", "achieved": 1}]},
+        schemas={10: {"gameName": "GFREMP2", "achievements": []}},
+    )
+    service = make_service(client)
+    await service.list_library(STEAMID)  # semeia o cache da biblioteca
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert detail.name == "Remnant II"

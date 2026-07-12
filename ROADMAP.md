@@ -10,7 +10,7 @@ SPA React**, com o `steamid` vindo da URL (multiusuário de leitura, sem login).
 
 - Arquitetura invariante OK: `web/` sem `httpx`, `services/` sem `fastapi`,
   `steam/` como único ponto HTTP. Wiring no `lifespan` de `main.py`.
-- **77 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
+- **79 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
 - Cache TTL com teto de entradas, retry com backoff, token bucket global na
   saída para a Steam, `Semaphore` no fan-out, validação do Steam ID na entrada.
 - Deploy: SPA na Vercel (rewrite `/api/*`), API pelo `Dockerfile`.
@@ -23,7 +23,11 @@ Não há bug grave conhecido.
 - [x] **Ícone quebrado quando `img_icon_url` vem vazio** (commit `70b5436`):
       `icon_url=None` quando o hash é falsy, com teste.
 - [x] **Nome vazio no detalhe quando o schema não tem `gameName`**: `game_detail`
-      cai em `gameName` → nome da biblioteca em cache → `App {appid}`.
+      tem fallback triplo até `App {appid}`.
+- [x] **Codinome interno no lugar do nome do jogo** (achado pelo `/verify`): o
+      `gameName` do schema às vezes é o codinome do estúdio — o detalhe do
+      Remnant II exibia **"GFREMP2"**. A ordem do fallback foi invertida: a
+      biblioteca (nome da loja) vem primeiro, o schema só vale para deep-link.
 - [ ] *(micro, opcional)* **Detalhe não semeia o cache `ach_counts:{steamid}:{appid}`**
       — `game_detail` chama o client direto, fora do `_cached()`. Visitar um jogo
       e depois ordenar por % refaz a chamada. Só vale se incomodar na prática.
@@ -43,9 +47,10 @@ nos payloads existentes.
       Reflete a lista já filtrada pela busca.
 - [x] **Badge "jogado recentemente"** — `Game.playtime_2weeks_minutes` do
       `playtime_2weeks`.
-- [ ] ⚠️ **Confirmar `playtime_2weeks` no payload real.** Nunca foi verificado com
-      uma `STEAM_API_KEY` de verdade. Se a Steam não mandar o campo, o badge só
-      não aparece (degrada sozinho) — mas é uma incógnita aberta. Cai no `/verify`.
+- [x] **`playtime_2weeks` confirmado no payload real** (`/verify` de 12/07/2026):
+      o campo simplesmente **não vem** quando não houve jogo nas últimas 2
+      semanas — nem como `0`. A ausência é o caso normal e o badge degrada
+      sozinho, como previsto. Falta ver o badge **aceso** num jogo recente.
 
 ## Features médias (REQ-040 a REQ-042)
 
@@ -62,9 +67,13 @@ antes de implementar — feito.
 - [x] **Ordenação por "última vez jogado"** (REQ-042) — `sort=last_played`, do
       `rtime_last_played` do `GetOwnedGames`. Custo zero: o campo já vinha no
       payload. Nunca jogado (`0`/ausente) vai para o fim. O card exibe a data.
-- [ ] ⚠️ **Confirmar `rtime_last_played` no payload real** — mesma incógnita do
-      `playtime_2weeks`. Se a Steam não mandar, a ordenação empata tudo e a
-      feature precisa ser repensada. Cai no `/verify`.
+- [x] **`rtime_last_played` confirmado no payload real** (`/verify` de 12/07/2026):
+      vem nos **155 jogos** da biblioteca, com valor em 134 e `0` em 21 (nunca
+      jogados). A ordenação foi verificada ponta a ponta contra a Steam.
+- [x] **Raridade verificada contra a Steam**: 65/65 conquistas com percentual num
+      jogo real; jogo sem stats globais devolve **403** → detalhe abre sem
+      raridade, sem 500. ⚠️ A Steam manda `percent` como **string** (`"49.9"`) —
+      o client converte na fronteira (commit `2e27719`).
 
 ## Dívida / processo
 

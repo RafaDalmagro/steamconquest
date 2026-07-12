@@ -166,10 +166,16 @@ class AchievementsService:
         )
 
     def _name(self, schema: dict, steamid: str, appid: int) -> str:
-        """Nome do jogo com fallback triplo — jogo sem schema não tem `gameName`."""
+        """Nome do jogo, da fonte mais confiável para a menos.
+
+        A biblioteca vem primeiro porque traz o nome da **loja** — o que o
+        usuário reconhece. O `gameName` do schema é o nome interno do estúdio e
+        às vezes é um codinome ("GFREMP2" para Remnant II). Só vale como plano B,
+        para quem abre o detalhe sem ter passado pela biblioteca (deep-link).
+        """
         return (
-            schema.get("gameName")
-            or self._name_from_library(steamid, appid)
+            self._name_from_library(steamid, appid)
+            or schema.get("gameName")
             or f"App {appid}"
         )
 

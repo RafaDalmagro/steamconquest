@@ -49,6 +49,66 @@ describe("Library", () => {
     expect(headings).toEqual(["Puzzle1", "RPG1", "Sem categoria1"]);
   });
 
+  it("mostra o nome e o avatar do perfil no título", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("/profile")
+          ? jsonResponse({
+              personaname: "Fulano",
+              avatar_url: "http://a/av.jpg",
+            })
+          : jsonResponse([
+              { appid: 10, name: "Portal", playtime_minutes: 480, icon_url: null },
+            ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /Biblioteca de Fulano/ }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("img", { name: "Fulano" })).toHaveAttribute(
+      "src",
+      "http://a/av.jpg",
+    );
+  });
+
+  it("mantém a biblioteca quando o perfil falha", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("/profile")
+          ? jsonResponse({ detail: "Dados indisponíveis." }, false, 404)
+          : jsonResponse([
+              { appid: 10, name: "Portal", playtime_minutes: 480, icon_url: null },
+            ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930");
+
+    await waitFor(() => expect(screen.getByText("Portal")).toBeInTheDocument());
+    expect(
+      screen.getByRole("heading", { name: /Biblioteca/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("mostra erro e não chama a API quando o steamid da URL é inválido", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderWithProviders(<App />, "/u/abc");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Steam ID inválido",
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("mostra a mensagem de erro do backend quando a API falha", async () => {
     vi.stubGlobal(
       "fetch",

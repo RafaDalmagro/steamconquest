@@ -1,10 +1,23 @@
-import { Route, Routes } from "react-router-dom";
+import { Outlet, Route, Routes, useParams } from "react-router-dom";
 
 import { Header } from "@/components/Header";
+import { Message } from "@/components/Message";
 import { Home } from "@/pages/Home";
 import { Library } from "@/pages/Library";
 import { GameDetail } from "@/pages/GameDetail";
 import { NotFound } from "@/pages/NotFound";
+import { isSteamId64 } from "@/lib/steamid";
+
+// Ponto único por onde passa toda URL com steamid: barrando aqui, as páginas
+// filhas nunca montam com um id malformado e não precisam saber que ele existe.
+function SteamIdValido() {
+  const { steamid = "" } = useParams();
+  if (!isSteamId64(steamid))
+    return (
+      <Message role="alert">Steam ID inválido. Ele deve ter 17 dígitos.</Message>
+    );
+  return <Outlet />;
+}
 
 function App() {
   return (
@@ -19,8 +32,10 @@ function App() {
       <main id="conteudo" className="mx-auto max-w-6xl p-6">
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/u/:steamid" element={<Library />} />
-          <Route path="/u/:steamid/game/:appid" element={<GameDetail />} />
+          <Route path="/u/:steamid" element={<SteamIdValido />}>
+            <Route index element={<Library />} />
+            <Route path="game/:appid" element={<GameDetail />} />
+          </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>

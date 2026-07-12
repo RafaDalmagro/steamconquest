@@ -4,6 +4,7 @@ import pytest
 from app.steam.client import SteamClient
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -88,6 +89,95 @@ async def test_get_schema_desembrulha_available_game_stats():
 
     assert schema["gameName"] == "Portal"
     assert schema["achievements"] == [{"name": "A", "displayName": "Aa"}]
+
+
+async def test_get_player_summary_desembrulha_o_primeiro_player():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "players": [
+                        {
+                            "steamid": "SID",
+                            "personaname": "Fulano",
+                            "avatarfull": "https://avatars.steamstatic.com/abc_full.jpg",
+                        }
+                    ]
+                }
+            },
+        )
+
+    client, http = make_client(handler)
+    try:
+        player = await client.get_player_summary("SID")
+    finally:
+        await http.aclose()
+
+    assert player["personaname"] == "Fulano"
+    assert player["avatarfull"] == "https://avatars.steamstatic.com/abc_full.jpg"
+
+
+async def test_get_player_summary_sem_players_levanta_profile_not_found():
+    # SteamID de 17 dígitos que não existe: a Steam devolve players: [].
+    # Erro próprio, distinto de perfil privado (que devolve o player normalmente).
+    def handler(request):
+        return httpx.Response(200, json={"response": {"players": []}})
+
+    client, http = make_client(handler)
+    try:
+        with pytest.raises(SteamProfileNotFound):
+            await client.get_player_summary("SID")
+    finally:
+        await http.aclose()
+
+
+async def test_teto_local_barra_a_chamada_antes_de_sair_para_a_steam():
+    # Protege a quota da STEAM_API_KEY: estourado o teto, a requisição nem sai.
+    chamadas = {"n": 0}
+
+    def handler(request):
+        chamadas["n"] += 1
+        return httpx.Response(200, json={"response": {"games": []}})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = SteamClient(http, "KEY", backoff=0, rate_burst=2, rate_per_minute=0)
+    try:
+        await client.get_owned_games("SID")
+        await client.get_owned_games("SID")
+        with pytest.raises(SteamRateLimitError):
+            await client.get_owned_games("SID")
+    finally:
+        await http.aclose()
+
+    assert chamadas["n"] == 2  # a 3ª não chegou à Steam
+
+
+async def test_teto_local_repoe_tokens_com_o_tempo():
+    relogio = {"agora": 0.0}
+
+    def handler(request):
+        return httpx.Response(200, json={"response": {"games": []}})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = SteamClient(
+        http,
+        "KEY",
+        backoff=0,
+        rate_burst=1,
+        rate_per_minute=60,  # 1 token por segundo
+        now=lambda: relogio["agora"],
+    )
+    try:
+        await client.get_owned_games("SID")  # gasta o único token
+        with pytest.raises(SteamRateLimitError):
+            await client.get_owned_games("SID")
+
+        relogio["agora"] = 1.0  # passou 1s: 1 token reposto
+
+        await client.get_owned_games("SID")  # volta a passar
+    finally:
+        await http.aclose()
 
 
 async def test_429_persistente_levanta_rate_limit_apos_retry():

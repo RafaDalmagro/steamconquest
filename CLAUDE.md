@@ -136,11 +136,19 @@ o catálogo global, não a conta).
 
 - Type hints em tudo; async em I/O. Sem abstrações especulativas — seguir a doc
   oficial, não inventar camadas.
-- Cache só via `TTLCache` (chaves: `owned_games`, `ach_counts:{appid}`). É
-  volátil e por processo; **não** introduzir banco para "guardar histórico"
-  sem aprovação explícita.
+- Cache só via `TTLCache`, sempre pelo helper `_cached()` do service (chaves
+  `owned_games:{steamid}`, `ach_counts:{steamid}:{appid}`, `schema:{appid}`,
+  `genres:{appid}`, `player_summary:{steamid}`). É volátil e por processo;
+  **não** introduzir banco para "guardar histórico" sem aprovação explícita.
+- O `TTLCache` tem **teto de entradas** (`_MAXSIZE`). Não remover: o `steamid`
+  vem da URL (input público), então o espaço de chaves é controlado por quem
+  chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.
 - Concorrência ao montar a biblioteca limitada por `Semaphore`
   (`steam_concurrency`) — manter, é o que evita 429 em conta grande.
+- Toda chamada com a key passa por um **token bucket global** no `SteamClient`
+  (`steam_rate_per_minute`/`steam_rate_burst`): protege a quota da chave contra
+  qualquer chamador, inclusive header forjado. Estourou → `SteamRateLimitError`
+  → 429. O endpoint de gênero (loja) não passa por ele: não usa a key.
 - Comentários e mensagens ao usuário em pt-BR.
 - Ao adicionar feature, incluir teste em `tests/` usando um client falso
   (ver `tests/test_service.py`) — domínio é testável sem rede; aproveitar isso.

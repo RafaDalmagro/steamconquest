@@ -1,7 +1,8 @@
 import { useParams, useSearchParams } from "react-router-dom";
 
-import { useGames } from "@/api/hooks";
+import { useGames, usePlayerSummary } from "@/api/hooks";
 import type { Game, Group, Sort } from "@/api/client";
+import { Avatar } from "@/components/Avatar";
 import { GameCard } from "@/components/GameCard";
 import { GROUPS, GroupBar } from "@/components/GroupBar";
 import { Message } from "@/components/Message";
@@ -38,6 +39,8 @@ export function Library() {
     : "none";
 
   const { data, isLoading, isError, error } = useGames(steamid, sort, group);
+  // Best-effort: perfil indisponível apenas mantém o título genérico.
+  const { data: profile } = usePlayerSummary(steamid);
 
   // Mantém sort e group juntos na URL; omite os valores default para URLs limpas.
   const update = (next: { sort?: Sort; group?: Group }) => {
@@ -51,14 +54,21 @@ export function Library() {
 
   return (
     <div>
-      <h1 className="mb-4 flex items-baseline gap-3 text-2xl font-semibold uppercase tracking-wide">
-        Biblioteca
-        {data && (
-          <span className="text-sm font-medium tracking-widest text-muted-foreground tabular-nums">
-            {data.length} jogos
-          </span>
-        )}
-      </h1>
+      <div className="mb-4 flex items-center gap-3">
+        {profile && <Avatar profile={profile} className="size-11" />}
+        <div>
+          <h1 className="text-2xl font-semibold uppercase tracking-wide">
+            {profile?.personaname
+              ? `Biblioteca de ${profile.personaname}`
+              : "Biblioteca"}
+          </h1>
+          {data && (
+            <span className="text-sm font-medium tracking-widest text-muted-foreground tabular-nums">
+              {data.length} jogos
+            </span>
+          )}
+        </div>
+      </div>
 
       <SortBar value={sort} onChange={(s) => update({ sort: s })} />
       <GroupBar value={group} onChange={(g) => update({ group: g })} />

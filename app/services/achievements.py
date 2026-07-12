@@ -1,8 +1,9 @@
 import asyncio
+from typing import Any, Callable
 
 from app.core.cache import TTLCache
-from app.errors import SteamError
-from app.schemas.models import Achievement, Game, GameDetail
+from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
+from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
 
 _ICON_URL = (
     "https://media.steampowered.com/steamcommunity/public/images/apps/{appid}/{hash}.jpg"
@@ -11,12 +12,20 @@ _ICON_URL = (
 # TTLs por natureza do dado (segundos). Ver spec REQ-010/CON-010.
 OWNED_TTL = 300
 ACH_TTL = 300
+PROFILE_TTL = 300
+# TTL curto para o "não existe": erra pouco se um perfil novo aparecer, e já
+# absorve a rajada de quem marreta o mesmo ID inválido.
+NOT_FOUND_TTL = 60
 SCHEMA_TTL = 86_400
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
 # retenta em ~1h para se recuperar sozinho.
 GENRES_MISS_TTL = 3_600
+
+# Sentinela de cache negativo: distingue "não existe" (cacheado) de "não está no
+# cache" (None), sem precisar guardar a exceção.
+_NAO_EXISTE = object()
 
 
 class AchievementsService:
@@ -34,7 +43,14 @@ class AchievementsService:
     async def list_library(
         self, steamid: str, sort: str = "playtime", group: str | None = None
     ) -> list[Game]:
-        raw = await self._owned_games(steamid)
+        try:
+            raw = await self._owned_games(steamid)
+        except SteamDataUnavailable:
+            # A Steam devolve "biblioteca indisponível" tanto para conta que não
+            # existe quanto para perfil privado. Só o perfil desempata — e só
+            # pagamos essa chamada aqui, no caminho de erro.
+            await self._assert_exists(steamid)
+            raise
         games = [
             Game(
                 appid=g["appid"],
@@ -55,8 +71,35 @@ class AchievementsService:
         _sort(games, sort)
         return games
 
+    async def player_summary(self, steamid: str) -> PlayerSummary:
+        key = f"player_summary:{steamid}"
+        cached = self._cache.get(key)
+        if cached is _NAO_EXISTE:
+            raise SteamProfileNotFound("perfil não encontrado")
+        if cached is not None:
+            return cached
+        try:
+            raw = await self._client.get_player_summary(steamid)
+        except SteamProfileNotFound:
+            # Conta inexistente não passa a existir: cacheia o "não" para que
+            # marretar o mesmo ID inválido não queime a quota da STEAM_API_KEY.
+            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
+            raise
+        profile = PlayerSummary(
+            personaname=raw.get("personaname", ""),
+            avatar_url=raw.get("avatarfull") or None,
+        )
+        self._cache.set(key, profile, PROFILE_TTL)
+        return profile
+
     async def game_detail(self, steamid: str, appid: int) -> GameDetail:
-        player = await self._client.get_player_achievements(steamid, appid)
+        try:
+            player = await self._client.get_player_achievements(steamid, appid)
+        except SteamDataUnavailable:
+            # Mesma ambiguidade da biblioteca: só o perfil desempata conta
+            # inexistente de conta privada. Pago só no caminho de erro.
+            await self._assert_exists(steamid)
+            raise
         schema = await self._schema(appid)
         name = schema.get("gameName", "")
 
@@ -100,14 +143,30 @@ class AchievementsService:
             achievements=achievements,
         )
 
+    async def _assert_exists(self, steamid: str) -> None:
+        """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
+        await self.player_summary(steamid)
+
+    async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch):
+        """Busca no cache; no miss, chama `fetch` e guarda o resultado.
+
+        `ttl` pode depender do valor (gênero encontrado dura mais que gênero
+        ausente). `None` nunca é cacheado: é o próprio sinal de miss do TTLCache.
+        """
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        value = await fetch()
+        if value is not None:
+            self._cache.set(key, value, ttl(value) if callable(ttl) else ttl)
+        return value
+
     async def _owned_games(self, steamid: str) -> list[dict]:
-        key = f"owned_games:{steamid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        raw = await self._client.get_owned_games(steamid)
-        self._cache.set(key, raw, OWNED_TTL)
-        return raw
+        return await self._cached(
+            f"owned_games:{steamid}",
+            OWNED_TTL,
+            lambda: self._client.get_owned_games(steamid),
+        )
 
     async def _fill_counts(self, steamid: str, games: list[Game]) -> None:
         sem = asyncio.Semaphore(self._concurrency)
@@ -139,35 +198,26 @@ class AchievementsService:
         await asyncio.gather(*(fill(g) for g in games))
 
     async def _app_genres(self, appid: int) -> list[str]:
-        key = f"genres:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        genres = await self._client.get_app_genres(appid)
-        self._cache.set(key, genres, GENRES_TTL if genres else GENRES_MISS_TTL)
-        return genres
+        return await self._cached(
+            f"genres:{appid}",
+            lambda genres: GENRES_TTL if genres else GENRES_MISS_TTL,
+            lambda: self._client.get_app_genres(appid),
+        )
 
     async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int] | None:
-        key = f"ach_counts:{steamid}:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        achievements = await self._client.get_player_achievements(steamid, appid)
-        if not achievements:
-            return None
-        achieved = sum(1 for a in achievements if a.get("achieved") == 1)
-        counts = (achieved, len(achievements))
-        self._cache.set(key, counts, ACH_TTL)
-        return counts
+        async def contar() -> tuple[int, int] | None:
+            achievements = await self._client.get_player_achievements(steamid, appid)
+            if not achievements:
+                return None  # jogo sem conquistas: nada a cachear
+            achieved = sum(1 for a in achievements if a.get("achieved") == 1)
+            return achieved, len(achievements)
+
+        return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
 
     async def _schema(self, appid: int) -> dict:
-        key = f"schema:{appid}"
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-        schema = await self._client.get_schema(appid)
-        self._cache.set(key, schema, SCHEMA_TTL)
-        return schema
+        return await self._cached(
+            f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
+        )
 
 
 def _percent(achieved: int, total: int) -> float:

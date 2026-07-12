@@ -3,6 +3,7 @@ import type { components } from "./types.gen";
 export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
+export type PlayerSummary = components["schemas"]["PlayerSummary"];
 export type Sort = "playtime" | "name" | "percent" | "ach_count";
 export type Group = "none" | "genre";
 
@@ -61,6 +62,11 @@ export const fetchGames = (
 	if (group === "genre") url += "&group=genre";
 	return getJSON<Game[]>(url);
 };
+
+export const fetchPlayerSummary = (steamid: string) =>
+	getJSON<PlayerSummary>(
+		buildApiUrl(`/users/${encodeURIComponent(steamid)}/profile`),
+	);
 
 export const fetchGameDetail = (steamid: string, appid: number) =>
 	getJSON<GameDetail>(

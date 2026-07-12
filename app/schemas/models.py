@@ -19,6 +19,13 @@ class Game(BaseModel):
     genres: list[str] = []
 
 
+class PlayerSummary(BaseModel):
+    """Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis."""
+
+    personaname: str
+    avatar_url: str | None = None
+
+
 class Achievement(BaseModel):
     """Conquista no detalhe do jogo."""
 

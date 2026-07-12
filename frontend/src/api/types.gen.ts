@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/users/{steamid}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Player Profile */
+        get: operations["player_profile_api_users__steamid__profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users/{steamid}/games": {
         parameters: {
             query?: never;
@@ -112,6 +129,16 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * PlayerSummary
+         * @description Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis.
+         */
+        PlayerSummary: {
+            /** Personaname */
+            personaname: string;
+            /** Avatar Url */
+            avatar_url?: string | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -134,6 +161,37 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    player_profile_api_users__steamid__profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                steamid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlayerSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_games_api_users__steamid__games_get: {
         parameters: {
             query?: {

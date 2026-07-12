@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, FastAPI, Path, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.schemas.models import Game, GameDetail
+from app.schemas.models import Game, GameDetail, PlayerSummary
 from app.services.achievements import AchievementsService
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -21,6 +23,11 @@ _STEAMID = Path(pattern=r"^\d{17}$")
 
 def get_service(request: Request) -> AchievementsService:
     return request.app.state.service
+
+
+@router.get("/users/{steamid}/profile", response_model=PlayerSummary)
+async def player_profile(steamid: str = _STEAMID, service=Depends(get_service)):
+    return await service.player_summary(steamid)
 
 
 @router.get("/users/{steamid}/games", response_model=list[Game])
@@ -44,6 +51,7 @@ async def game_detail(appid: int, steamid: str = _STEAMID, service=Depends(get_s
 
 # Mapeamento de erro tipado → HTTP + mensagem amigável (pt-BR), em JSON.
 _ERROR_MAP = {
+    SteamProfileNotFound: (404, "Steam ID não encontrado. Confira os 17 dígitos."),
     SteamDataUnavailable: (404, "Dados indisponíveis. O perfil pode estar privado."),
     SteamRateLimitError: (429, "A Steam limitou as requisições. Tente novamente em instantes."),
     SteamUnavailableError: (502, "A Steam está indisponível no momento."),
@@ -57,3 +65,14 @@ def register_error_handlers(app: FastAPI) -> None:
 
     for exc_type in _ERROR_MAP:
         app.add_exception_handler(exc_type, handle)
+
+    # O 422 padrão do FastAPI traz `detail` como array de erros de validação, que
+    # o frontend não sabe exibir. Aqui ele passa a falar o mesmo contrato dos
+    # demais erros — {"detail": "<pt-BR>"} — para steamid, appid e params futuros.
+    async def handle_validation(request: Request, exc: Exception):
+        return JSONResponse(
+            {"detail": "Parâmetro inválido na URL. Confira o Steam ID e o jogo."},
+            status_code=422,
+        )
+
+    app.add_exception_handler(RequestValidationError, handle_validation)

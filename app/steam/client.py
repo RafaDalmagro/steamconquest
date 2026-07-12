@@ -1,9 +1,12 @@
 import asyncio
+import time
+from typing import Callable
 
 import httpx
 
 from app.errors import (
     SteamDataUnavailable,
+    SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
 )
@@ -11,6 +14,34 @@ from app.errors import (
 _BASE = "https://api.steampowered.com"
 # Loja (não-oficial): única fonte de gênero. Sem key, best-effort.
 _STORE_APPDETAILS = "https://store.steampowered.com/api/appdetails"
+
+
+class _TokenBucket:
+    """Teto global de chamadas à Steam, para proteger a quota da STEAM_API_KEY.
+
+    Guarda a *chave*, não o processo: vale para qualquer chamador, e nenhum
+    header forjado escapa dele. `burst` absorve a rajada legítima de um load de
+    biblioteca grande (uma chamada de conquistas por jogo); `rate` sustenta o
+    orçamento diário da chave.
+    """
+
+    def __init__(self, rate_per_minute: float, burst: int, now: Callable[[], float]):
+        self._rate = rate_per_minute / 60.0  # tokens por segundo
+        self._capacity = float(burst)
+        self._tokens = float(burst)
+        self._now = now
+        self._updated = now()
+
+    def consume(self) -> bool:
+        agora = self._now()
+        self._tokens = min(
+            self._capacity, self._tokens + (agora - self._updated) * self._rate
+        )
+        self._updated = agora
+        if self._tokens < 1:
+            return False
+        self._tokens -= 1
+        return True
 
 
 class SteamClient:
@@ -28,12 +59,16 @@ class SteamClient:
         max_retries: int = 3,
         backoff: float = 0.5,
         language: str = "brazilian",
+        rate_per_minute: float = 70.0,
+        rate_burst: int = 500,
+        now: Callable[[], float] = time.monotonic,
     ):
         self._http = http
         self._key = api_key
         self._max_retries = max_retries
         self._backoff = backoff
         self._lang = language
+        self._bucket = _TokenBucket(rate_per_minute, rate_burst, now)
 
     async def get_owned_games(self, steamid: str) -> list[dict]:
         data = await self._get(
@@ -44,6 +79,19 @@ class SteamClient:
         if "games" not in response:
             raise SteamDataUnavailable("biblioteca indisponível (perfil privado?)")
         return response["games"]
+
+    async def get_player_summary(self, steamid: str) -> dict:
+        """Perfil público (nome e avatar). Funciona mesmo com perfil privado."""
+        data = await self._get(
+            "/ISteamUser/GetPlayerSummaries/v2/",
+            {"steamids": steamid},
+        )
+        players = data.get("response", {}).get("players", [])
+        if not players:
+            # players: [] só acontece com SteamID inexistente — perfil privado
+            # continua devolvendo o player (nome e avatar são públicos).
+            raise SteamProfileNotFound("perfil não encontrado")
+        return players[0]
 
     async def get_player_achievements(self, steamid: str, appid: int) -> list[dict] | None:
         data = await self._get(
@@ -100,6 +148,10 @@ class SteamClient:
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
+            # Por tentativa, não por chamada lógica: o retry também consome a
+            # quota da chave, então também precisa de token.
+            if not self._bucket.consume():
+                raise SteamRateLimitError("teto local de chamadas à Steam atingido")
             try:
                 resp = await self._http.get(_BASE + path, params=params)
             except httpx.HTTPError as exc:

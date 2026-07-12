@@ -214,8 +214,8 @@ progresso do jogador.
 {
   "achievementpercentages": {
     "achievements": [
-      { "name": "HL2_HIT_CANCOLLECTOR", "percent": 42.7 },
-      { "name": "HL2_BEAT_GAME", "percent": 4.1 }
+      { "name": "TF_SCOUT_LONG_DISTANCE_RUNNER", "percent": "49.9" },
+      { "name": "TF_HEAVY_DAMAGE_TAKEN", "percent": "40.3" }
     ]
   }
 }
@@ -224,10 +224,13 @@ progresso do jogador.
 | Campo | Tipo | Uso |
 |---|---|---|
 | `achievementpercentages.achievements[].name` | string | junta com `apiname` (mesma chave do `GetPlayerAchievements`) |
-| `...[].percent` | float | % global de jogadores que obteve a conquista |
+| `...[].percent` | **string** | % global de jogadores que obteve a conquista |
 
 ### Notas
 
+- ⚠️ **`percent` vem como string** (`"49.9"`), não como número — verificado no
+  payload real do appid 440. O client converte para `float` na fronteira; o
+  resto do app só vê número.
 - A junção é por `name` ↔ `apiname`, igual à do `GetSchemaForGame`.
 - Jogo sem estatísticas globais ⇒ `403` ou lista vazia. É **best-effort**: sem
   raridade a conquista continua listada — nunca derruba o detalhe.

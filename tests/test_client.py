@@ -372,8 +372,15 @@ async def test_raridade_global_sai_com_gameid_e_vira_mapa_por_apiname():
             json={
                 "achievementpercentages": {
                     "achievements": [
-                        {"name": "ACH_A", "percent": 42.7},
+                        # A Steam manda o percentual como *string* ("49.9"), não
+                        # como número — confirmado no payload real do appid 440.
+                        {"name": "ACH_A", "percent": "42.7"},
                         {"name": "ACH_B", "percent": 4.1},
+                        # Malformadas: entram no mapa nenhuma delas, e nenhuma
+                        # levanta — raridade é decoração, não pode dar 500.
+                        {"name": "ACH_SEM_PCT"},
+                        {"name": "ACH_LIXO", "percent": "n/a"},
+                        {"percent": "10.0"},
                     ]
                 }
             },
@@ -387,4 +394,5 @@ async def test_raridade_global_sai_com_gameid_e_vira_mapa_por_apiname():
 
     assert capturado["gameid"] == "10"
     assert capturado["appid"] is None
+    # Sempre float, venha string ou número da Steam.
     assert percentuais == {"ACH_A": 42.7, "ACH_B": 4.1}

@@ -125,20 +125,26 @@ class SteamClient:
         por 24h *por jogo*. Se o teto local começar a barrar o fan-out da
         biblioteca, é este o candidato a sair do bucket.
 
+        ⚠️ A Steam devolve `percent` como **string** ("49.9"), não como número —
+        confirmado no payload real. Convertemos aqui, na fronteira, para o resto
+        do app só ver float.
+
         Entrada malformada é ignorada, não levanta: quem chama trata raridade
-        como decoração, e um KeyError aqui derrubaria um detalhe inteiro que já
-        tem tudo que importa.
+        como decoração, e um KeyError/ValueError aqui derrubaria um detalhe
+        inteiro que já tem tudo que importa.
         """
         data = await self._get(
             "/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/",
             {"gameid": appid},
         )
         achievements = data.get("achievementpercentages", {}).get("achievements", [])
-        return {
-            a["name"]: a["percent"]
-            for a in achievements
-            if "name" in a and "percent" in a
-        }
+        percentuais = {}
+        for a in achievements:
+            try:
+                percentuais[a["name"]] = float(a["percent"])
+            except (KeyError, TypeError, ValueError):
+                continue  # entrada sem nome, sem percent ou com lixo: só ignora
+        return percentuais
 
     async def get_app_genres(self, appid: int) -> list[str]:
         """Gêneros de um jogo via storefront (endpoint não-oficial da Steam).

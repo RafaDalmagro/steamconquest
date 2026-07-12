@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import Settings
+from app.config import load_settings
 from app.core.cache import TTLCache
 from app.services.achievements import AchievementsService
 from app.steam.client import SteamClient
@@ -26,7 +26,7 @@ def _parse_cors_origins(raw_origins: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = Settings()
+    settings = app.state.settings
     http = httpx.AsyncClient(timeout=settings.http_timeout)
     # language="brazilian" é default do SteamClient (config de produto, não de deploy).
     # O steamid vem por request (path /api/users/{steamid}/...), não do env.
@@ -59,7 +59,7 @@ class SPAStaticFiles(StaticFiles):
 
 
 def create_app() -> FastAPI:
-    settings = Settings()
+    settings = load_settings()
     prod = settings.environment == "prod"
     app = FastAPI(
         title="Conquistas Steam",
@@ -70,6 +70,8 @@ def create_app() -> FastAPI:
         redoc_url=None if prod else "/redoc",
         openapi_url=None if prod else "/openapi.json",
     )
+    # Env lido uma vez só; o lifespan reaproveita daqui.
+    app.state.settings = settings
     cors_origins = _parse_cors_origins(settings.cors_origins)
     if cors_origins:
         # Só existe no deploy split (SPA na Vercel × API em outro host). Em dev o

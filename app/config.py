@@ -18,3 +18,12 @@ class Settings(BaseSettings):
     cors_origins: str = ""
     steam_concurrency: int = 5
     http_timeout: float = 10.0
+
+
+def load_settings() -> Settings:
+    """Carrega Settings do ambiente/.env.
+
+    O type checker não sabe que campos obrigatórios (steam_api_key) vêm do env,
+    então acusa argumento ausente. O ignore fica aqui, num ponto só.
+    """
+    return Settings()  # pyright: ignore[reportCallIssue]

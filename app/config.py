@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     cors_origins: str = ""
     steam_concurrency: int = 5
     http_timeout: float = 10.0
+    # Teto de saída para a Steam, protegendo a quota da chave (~100k/dia ≈ 70/min
+    # sustentados). O burst absorve o load de uma biblioteca grande, que dispara
+    # uma chamada de conquistas por jogo.
+    steam_rate_per_minute: float = 70.0
+    steam_rate_burst: int = 500
 
 
 def load_settings() -> Settings:

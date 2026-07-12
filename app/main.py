@@ -30,7 +30,12 @@ async def lifespan(app: FastAPI):
     http = httpx.AsyncClient(timeout=settings.http_timeout)
     # language="brazilian" é default do SteamClient (config de produto, não de deploy).
     # O steamid vem por request (path /api/users/{steamid}/...), não do env.
-    client = SteamClient(http, settings.steam_api_key)
+    client = SteamClient(
+        http,
+        settings.steam_api_key,
+        rate_per_minute=settings.steam_rate_per_minute,
+        rate_burst=settings.steam_rate_burst,
+    )
     app.state.service = AchievementsService(
         client, TTLCache(), settings.steam_concurrency
     )

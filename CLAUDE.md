@@ -145,6 +145,10 @@ o catálogo global, não a conta).
   chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.
 - Concorrência ao montar a biblioteca limitada por `Semaphore`
   (`steam_concurrency`) — manter, é o que evita 429 em conta grande.
+- Toda chamada com a key passa por um **token bucket global** no `SteamClient`
+  (`steam_rate_per_minute`/`steam_rate_burst`): protege a quota da chave contra
+  qualquer chamador, inclusive header forjado. Estourou → `SteamRateLimitError`
+  → 429. O endpoint de gênero (loja) não passa por ele: não usa a key.
 - Comentários e mensagens ao usuário em pt-BR.
 - Ao adicionar feature, incluir teste em `tests/` usando um client falso
   (ver `tests/test_service.py`) — domínio é testável sem rede; aproveitar isso.

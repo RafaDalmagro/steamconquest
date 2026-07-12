@@ -48,6 +48,8 @@ Biblioteca, tempo de jogo, nome e ícone dos jogos da conta.
         "appid": 220,
         "name": "Half-Life 2",
         "playtime_forever": 7200,
+        "playtime_2weeks": 180,
+        "rtime_last_played": 1710000000,
         "img_icon_url": "fcfb366051782b8ebf2aa297f3b746395858cb62"
       }
     ]
@@ -61,11 +63,17 @@ Biblioteca, tempo de jogo, nome e ícone dos jogos da conta.
 | `games[].appid` | int | identificador do jogo |
 | `games[].name` | string | nome (requer `include_appinfo=1`) |
 | `games[].playtime_forever` | int | **minutos** totais jogados |
+| `games[].playtime_2weeks` | int (opcional) | **minutos** nas últimas 2 semanas → badge "Recente" |
+| `games[].rtime_last_played` | int (epoch UTC) | última vez jogado → `sort=last_played` |
 | `games[].img_icon_url` | string | hash do ícone (montar URL, ver abaixo) |
 
 ### Notas
 
 - `playtime_forever` está em **minutos**; converter para exibição (horas).
+- `playtime_2weeks` **só vem no payload de quem jogou nas últimas 2 semanas** — a
+  ausência é o caso normal, não erro.
+- `rtime_last_played` é epoch em **segundos**, UTC. `0` (ou ausente) significa
+  **nunca jogado**, não 1970 — ordenar esses por último.
 - Perfil privado ⇒ `response` vazio / sem `games` ⇒ tratar como
   `SteamDataUnavailable`.
 - **URL do ícone do jogo:**
@@ -182,10 +190,58 @@ detalhe do jogo para enriquecer a lista; não é fonte do percentual.
 
 ---
 
+## 4. ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2
+
+Percentual **global** de jogadores que obteve cada conquista de um jogo — a
+"raridade". Usado no detalhe para decorar cada conquista; **não** é fonte do
+progresso do jogador.
+
+> ⚠️ O parâmetro é **`gameid`**, não `appid` — diferente de todos os outros
+> endpoints deste doc. Errar o nome devolve resposta vazia, não erro.
+
+**Método:** `GET /ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/`
+
+### Parâmetros
+
+| Parâmetro | Obrigatório | Valor no projeto | Descrição |
+|---|---|---|---|
+| `gameid` | sim | `{appid}` | jogo alvo (**não** se chama `appid`) |
+| `key` | não | `{STEAM_API_KEY}` | não é exigida; o app manda por reusar o `_get()` |
+
+### Resposta (sucesso)
+
+```json
+{
+  "achievementpercentages": {
+    "achievements": [
+      { "name": "HL2_HIT_CANCOLLECTOR", "percent": 42.7 },
+      { "name": "HL2_BEAT_GAME", "percent": 4.1 }
+    ]
+  }
+}
+```
+
+| Campo | Tipo | Uso |
+|---|---|---|
+| `achievementpercentages.achievements[].name` | string | junta com `apiname` (mesma chave do `GetPlayerAchievements`) |
+| `...[].percent` | float | % global de jogadores que obteve a conquista |
+
+### Notas
+
+- A junção é por `name` ↔ `apiname`, igual à do `GetSchemaForGame`.
+- Jogo sem estatísticas globais ⇒ `403` ou lista vazia. É **best-effort**: sem
+  raridade a conquista continua listada — nunca derruba o detalhe.
+- A raridade é **por jogo, não por jogador** ⇒ cache `global_pct:{appid}` com TTL
+  longo (24h), compartilhado entre todos os visitantes.
+
+---
+
 ## Mapa de uso no app
 
 | Necessidade | Endpoint(s) |
 |---|---|
 | Index (biblioteca + playtime) | `GetOwnedGames` |
 | Index ordenado por % / nº conquistas | `GetOwnedGames` + `GetPlayerAchievements` (fan-out) |
+| Index ordenado por última vez jogado | `GetOwnedGames` (`rtime_last_played`, sem chamada extra) |
 | Detalhe do jogo (obtidas/pendentes/% + textos) | `GetPlayerAchievements` + `GetSchemaForGame` |
+| Detalhe com raridade global | + `GetGlobalAchievementPercentagesForApp` |

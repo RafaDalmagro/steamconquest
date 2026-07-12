@@ -1,8 +1,8 @@
 ---
 title: App Web Pessoal de Conquistas Steam — Especificação de Comportamento
-version: 1.0
+version: 1.1
 date_created: 2026-06-28
-last_updated: 2026-06-28
+last_updated: 2026-07-12
 owner: rafa.limadalmagro
 tags: [architecture, design, app, steam, fastapi]
 ---
@@ -62,7 +62,7 @@ fazer perguntas.
 ### Funcionais
 - **REQ-001**: A rota `GET /` lista os jogos da conta com nome, ícone e playtime.
 - **REQ-002**: `GET /` aceita o parâmetro de query `sort` com valores:
-  `playtime` (default), `name`, `percent`, `ach_count`.
+  `playtime` (default), `name`, `percent`, `ach_count`, `last_played` (REQ-042).
 - **REQ-003**: Para `sort=playtime` e `sort=name`, `GET /` executa **uma única**
   chamada (`GetOwnedGames`) e **não** busca conquistas.
 - **REQ-004**: Para `sort=percent` e `sort=ach_count`, `GET /` executa fan-out de
@@ -100,11 +100,35 @@ vêm nas respostas atuais ou de agregação client-side.
   `GetOwnedGames` traz `playtime_2weeks`. O campo só aparece no payload quando
   houve jogo nas últimas duas semanas — a ausência é o caso normal, não erro.
 
+### Funcionais — campo/endpoint novo
+
+Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
+`Steam_Web_API_Documentation.md`).
+
+- **REQ-040**: O detalhe exibe a **raridade global** de cada conquista — o % de
+  jogadores que a obteve — vinda de
+  `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` (parâmetro `gameid`),
+  com junção por `apiname`. A UI mostra o % e marca como **rara** a conquista
+  abaixo de 10%. É a única feature pós-v1.0 que **custa quota**: +1 chamada por
+  jogo, cacheada em `global_pct:{appid}` — a chave é o **jogo**, não o jogador,
+  logo o cache é compartilhado entre todos os visitantes.
+- **REQ-041**: A raridade é **decoração e nunca derruba a página**: jogo sem
+  estatísticas globais (403 ou lista vazia), falha de rede ou rate limit ⇒ as
+  conquistas são renderizadas sem raridade, e o detalhe responde 200. Mesma
+  postura best-effort do fan-out do REQ-004.
+- **REQ-042**: `sort=last_played` ordena a biblioteca pela **última vez jogado**
+  (`rtime_last_played` do `GetOwnedGames`), decrescente. Custo zero de quota: o
+  campo já vem no payload que o app busca. `rtime_last_played` ausente ou `0`
+  significa **nunca jogado** (não 1970) ⇒ esses jogos vão para o fim da lista. O
+  card exibe a data.
+
 ### Cache
 - **REQ-010**: Resultados são cacheados em `TTLCache` por processo, volátil.
   Chaves: `owned_games`, `ach_counts:{appid}`, `schema:{appid}`.
 - **CON-010**: TTL `owned_games` = 300s; `ach_counts:{appid}` = 300s;
-  `schema:{appid}` = 86400s (schema é quase imutável). Valores configuráveis.
+  `schema:{appid}` = 86400s (schema é quase imutável); `global_pct:{appid}` =
+  86400s quando há dados, 3600s quando vem vazio (o vazio pode ser falha
+  transitória e não merece 24h de cache negativo). Valores configuráveis.
 
 ### Concorrência / Resiliência
 - **REQ-020**: O fan-out é limitado por `Semaphore(steam_concurrency)` para
@@ -140,7 +164,7 @@ vêm nas respostas atuais ou de agregação client-side.
 
 | Método | Rota | Query | Resposta |
 |---|---|---|---|
-| GET | `/api/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`} | JSON `list[Game]` |
+| GET | `/api/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`} | JSON `list[Game]` |
 | GET | `/api/games/{appid}` | — | JSON `GameDetail` |
 
 - `sort` ausente/inválido ⇒ trata como `playtime` (default).
@@ -153,13 +177,12 @@ vêm nas respostas atuais ou de agregação client-side.
 
 | Endpoint | Parâmetros-chave | Uso |
 |---|---|---|
-| `IPlayerService/GetOwnedGames/v1` | `steamid`, `include_appinfo=1`, `include_played_free_games=1` | biblioteca + playtime + nome + `img_icon_url` + `playtime_2weeks` (REQ-033) |
+| `IPlayerService/GetOwnedGames/v1` | `steamid`, `include_appinfo=1`, `include_played_free_games=1` | biblioteca + playtime + nome + `img_icon_url` + `playtime_2weeks` (REQ-033) + `rtime_last_played` (REQ-042) |
 | `ISteamUserStats/GetPlayerAchievements/v1` | `steamid`, `appid` | flag `achieved` (0/1) por conquista → % e contagem; `unlocktime` (REQ-030) |
 | `ISteamUserStats/GetSchemaForGame/v2` | `appid`, `l=brazilian` | `availableGameStats.achievements`: `name`/`displayName`/`description`/`icon` |
+| `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` | **`gameid`** | raridade global por `apiname` (REQ-040) |
 
-⚠️ `GetOwnedGames` (e portanto `playtime_2weeks`) é oficial da Valve mas **não
-consta** no `Steam_Web_API_Documentation.md`. Esta tabela é a referência do campo.
-`unlocktime` está documentado (`Steam_Web_API_Documentation.md:101`).
+⚠️ O parâmetro do endpoint de raridade é `gameid`, não `appid` — é o único assim.
 
 ### Modelo de domínio (pydantic, ilustrativo)
 
@@ -168,10 +191,13 @@ class Game(BaseModel):
     appid: int
     name: str
     playtime_minutes: int
+    playtime_2weeks_minutes: int | None   # só quem jogou nas últimas 2 semanas (REQ-033)
+    last_played_at: datetime | None       # None = nunca jogado (REQ-042)
     icon_url: str | None
     percent: float | None        # preenchido só em sort=percent/ach_count
     achieved_count: int | None
     total_count: int | None
+    genres: list[str]            # preenchido só em group=genre
 
 class Achievement(BaseModel):
     apiname: str
@@ -179,6 +205,8 @@ class Achievement(BaseModel):
     description: str | None
     icon_url: str | None
     achieved: bool
+    unlocked_at: datetime | None    # só nas obtidas, e nem sempre (REQ-030)
+    global_percent: float | None    # None quando a raridade não veio (REQ-041)
 
 class GameDetail(BaseModel):
     appid: int
@@ -225,6 +253,15 @@ o SPA exibe a mensagem do campo `detail`.
   Then o app responde 429/502 respectivamente.
 - **AC-010**: Given qualquer execução, When inspecionado o log, Then a
   `STEAM_API_KEY` nunca aparece.
+- **AC-011**: Given um jogo com estatísticas globais, When abre o detalhe, Then
+  cada conquista exibe o % global de jogadores e a que está abaixo de 10% aparece
+  marcada como rara.
+- **AC-012**: Given a Steam não devolve raridade (403, lista vazia, rede ou 429),
+  When abre o detalhe, Then a página responde 200 com todas as conquistas, apenas
+  sem raridade — não quebra e não vira erro.
+- **AC-013**: Given `GET /?sort=last_played`, When renderiza, Then ordena pela
+  última vez jogado (mais recente primeiro), com os nunca jogados por último, e
+  **nenhuma** chamada Steam além do `GetOwnedGames`.
 
 ## 6. Test Automation Strategy
 

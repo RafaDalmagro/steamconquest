@@ -78,6 +78,28 @@ fazer perguntas.
 - **REQ-008**: Jogo sem sistema de conquistas é tratado como
   `supports_achievements=False` e renderizado sem quebrar (mensagem informativa).
 
+### Funcionais — custo zero de quota
+
+Requisitos que não acrescentam nenhuma chamada à Steam: derivam de campos que já
+vêm nas respostas atuais ou de agregação client-side.
+
+- **REQ-030**: O detalhe exibe a **data de desbloqueio** de cada conquista obtida
+  (`unlocktime` do `GetPlayerAchievements`) e ordena a lista: obtidas primeiro,
+  da mais recente para a mais antiga; pendentes depois, na ordem do schema.
+  `unlocktime` ausente ou `0` numa conquista obtida ⇒ sem data (a Steam devolve
+  `0` para desbloqueios muito antigos) — a conquista continua listada.
+- **REQ-031**: A biblioteca oferece **busca por nome**, filtrando **client-side**
+  a lista já carregada (mesmo princípio do REQ-007): zero chamadas ao servidor.
+  A busca é estado efêmero da UI e **não** entra na URL (ao contrário de `sort` e
+  `group`).
+- **REQ-032**: A biblioteca exibe um **resumo agregado** do que está em tela:
+  nº de jogos e horas totais. Quando os dados de conquista estiverem carregados
+  (`sort=percent` ou `sort=ach_count`), também o nº de jogos 100% concluídos. O
+  resumo reflete a lista **após** a busca do REQ-031.
+- **REQ-033**: O card do jogo exibe um badge de **jogado recentemente** quando o
+  `GetOwnedGames` traz `playtime_2weeks`. O campo só aparece no payload quando
+  houve jogo nas últimas duas semanas — a ausência é o caso normal, não erro.
+
 ### Cache
 - **REQ-010**: Resultados são cacheados em `TTLCache` por processo, volátil.
   Chaves: `owned_games`, `ach_counts:{appid}`, `schema:{appid}`.
@@ -131,9 +153,13 @@ fazer perguntas.
 
 | Endpoint | Parâmetros-chave | Uso |
 |---|---|---|
-| `IPlayerService/GetOwnedGames/v1` | `steamid`, `include_appinfo=1`, `include_played_free_games=1` | biblioteca + playtime + nome + `img_icon_url` |
-| `ISteamUserStats/GetPlayerAchievements/v1` | `steamid`, `appid` | flag `achieved` (0/1) por conquista → % e contagem |
+| `IPlayerService/GetOwnedGames/v1` | `steamid`, `include_appinfo=1`, `include_played_free_games=1` | biblioteca + playtime + nome + `img_icon_url` + `playtime_2weeks` (REQ-033) |
+| `ISteamUserStats/GetPlayerAchievements/v1` | `steamid`, `appid` | flag `achieved` (0/1) por conquista → % e contagem; `unlocktime` (REQ-030) |
 | `ISteamUserStats/GetSchemaForGame/v2` | `appid`, `l=brazilian` | `availableGameStats.achievements`: `name`/`displayName`/`description`/`icon` |
+
+⚠️ `GetOwnedGames` (e portanto `playtime_2weeks`) é oficial da Valve mas **não
+consta** no `Steam_Web_API_Documentation.md`. Esta tabela é a referência do campo.
+`unlocktime` está documentado (`Steam_Web_API_Documentation.md:101`).
 
 ### Modelo de domínio (pydantic, ilustrativo)
 

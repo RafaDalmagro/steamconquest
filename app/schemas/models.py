@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -12,6 +14,9 @@ class Game(BaseModel):
     appid: int
     name: str
     playtime_minutes: int
+    # Ausente na maioria: a Steam só manda `playtime_2weeks` para quem jogou nas
+    # últimas duas semanas.
+    playtime_2weeks_minutes: int | None = None
     icon_url: str | None = None
     percent: float | None = None
     achieved_count: int | None = None
@@ -34,6 +39,9 @@ class Achievement(BaseModel):
     description: str | None = None
     icon_url: str | None = None
     achieved: bool
+    # Só nas obtidas — e nem sempre: a Steam devolve unlocktime 0 em desbloqueios
+    # muito antigos. Serializa como ISO-8601 UTC; quem formata é o browser.
+    unlocked_at: datetime | None = None
 
 
 class GameDetail(BaseModel):

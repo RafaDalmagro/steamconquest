@@ -67,6 +67,7 @@ def test_lista_jogos_retorna_json():
             "appid": 10,
             "name": "Portal",
             "playtime_minutes": 60,
+            "playtime_2weeks_minutes": None,
             "icon_url": None,
             "percent": None,
             "achieved_count": None,

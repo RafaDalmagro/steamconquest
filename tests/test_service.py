@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 
@@ -112,6 +113,29 @@ async def test_jogo_sem_icone_nao_gera_url_quebrada():
     games = await service.list_library(STEAMID)
 
     assert games[0].icon_url is None
+
+
+async def test_playtime_recente_so_aparece_em_quem_jogou():
+    client = FakeSteamClient(
+        owned_games=[
+            # A Steam só manda playtime_2weeks quando houve jogo nas 2 semanas;
+            # a ausência é o caso normal da maioria da biblioteca.
+            {
+                "appid": 10,
+                "name": "Jogado",
+                "playtime_forever": 600,
+                "playtime_2weeks": 120,
+                "img_icon_url": "a",
+            },
+            {"appid": 20, "name": "Parado", "playtime_forever": 600, "img_icon_url": "b"},
+        ]
+    )
+    service = make_service(client)
+
+    jogado, parado = await service.list_library(STEAMID, sort="name")
+
+    assert jogado.playtime_2weeks_minutes == 120
+    assert parado.playtime_2weeks_minutes is None
 
 
 async def test_ordenacao_por_nome_e_alfabetica():
@@ -440,6 +464,54 @@ async def test_detalhe_junta_achievements_com_schema():
     pendente = detail.achievements[1]
     assert pendente.achieved is False
     assert pendente.icon_url == "grayB"
+
+
+async def test_detalhe_expoe_a_data_de_desbloqueio_das_obtidas():
+    client = FakeSteamClient(
+        achievements={
+            10: [
+                {"apiname": "A", "achieved": 1, "unlocktime": 1_312_345_678},
+                # Desbloqueio antigo demais: a Steam devolve 0 mesmo com achieved=1.
+                {"apiname": "B", "achieved": 1, "unlocktime": 0},
+                {"apiname": "C", "achieved": 0, "unlocktime": 0},
+            ]
+        },
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    obtida, sem_data, pendente = detail.achievements
+    assert obtida.unlocked_at == datetime(2011, 8, 3, 4, 27, 58, tzinfo=UTC)
+    assert sem_data.unlocked_at is None
+    assert pendente.unlocked_at is None
+
+
+async def test_detalhe_sem_schema_usa_o_nome_da_biblioteca():
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 77, "name": "Jogo Sem Schema", "playtime_forever": 10, "img_icon_url": "x"}
+        ],
+        achievements={77: [{"apiname": "A", "achieved": 1}]},
+        schemas={},  # jogo sem schema publicado: sem gameName
+    )
+    service = make_service(client)
+    await service.list_library(STEAMID)  # semeia o cache da biblioteca
+
+    detail = await service.game_detail(STEAMID, 77)
+
+    assert detail.name == "Jogo Sem Schema"
+
+
+async def test_detalhe_sem_schema_e_sem_biblioteca_cai_no_nome_generico():
+    # Acesso direto pela URL: nada em cache e o jogo não publica schema.
+    client = FakeSteamClient(achievements={77: [{"apiname": "A", "achieved": 1}]}, schemas={})
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 77)
+
+    assert detail.name == "App 77"
+    assert client.owned_calls == []  # não paga uma chamada à Steam só pelo título
 
 
 async def test_detalhe_de_jogo_sem_stats_nao_quebra():

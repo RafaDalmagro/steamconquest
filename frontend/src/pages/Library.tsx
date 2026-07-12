@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
 import { useGames, usePlayerSummary } from "@/api/hooks";
@@ -7,10 +8,32 @@ import { GameCard } from "@/components/GameCard";
 import { GROUPS, GroupBar } from "@/components/GroupBar";
 import { Message } from "@/components/Message";
 import { SORTS, SortBar } from "@/components/SortBar";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const GRID = "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4";
 const SEM_CATEGORIA = "Sem categoria";
+
+const HORAS = new Intl.NumberFormat("pt-BR", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
+const plural = (n: number, singular: string) =>
+  `${n} ${singular}${n === 1 ? "" : "s"}`;
+
+// Agrega o que está em tela (já filtrado pela busca): nada de chamada extra.
+function resumo(games: Game[]): string {
+  const horas = games.reduce((t, g) => t + g.playtime_minutes, 0) / 60;
+  const partes = [plural(games.length, "jogo"), `${HORAS.format(horas)} h`];
+  // Gatilho é a presença do percentual, não o valor do sort: `ach_count`
+  // também preenche as conquistas, e amarrar em `sort === "percent"` erraria lá.
+  if (games.some((g) => g.percent != null)) {
+    const perfeitos = games.filter((g) => g.percent === 100).length;
+    partes.push(`${plural(perfeitos, "jogo")} 100%`);
+  }
+  return partes.join(" · ");
+}
 
 // Particiona por gênero primário (genres[0]); jogos sem gênero vão para "Sem
 // categoria", sempre por último. Mantém a ordem vinda do servidor dentro do grupo.
@@ -42,6 +65,14 @@ export function Library() {
   // Best-effort: perfil indisponível apenas mantém o título genérico.
   const { data: profile } = usePlayerSummary(steamid);
 
+  // Busca client-side sobre a lista já carregada — nenhuma chamada ao servidor.
+  // Fica em useState (e não na URL como sort/group): é estado efêmero de
+  // digitação, não vale sujar a URL a cada tecla.
+  const [busca, setBusca] = useState("");
+  const termo = busca.trim().toLowerCase();
+  // Sem debounce nem useMemo: filtrar a biblioteca em memória é sub-milissegundo.
+  const jogos = data?.filter((g) => g.name.toLowerCase().includes(termo));
+
   // Mantém sort e group juntos na URL; omite os valores default para URLs limpas.
   const update = (next: { sort?: Sort; group?: Group }) => {
     const s = next.sort ?? sort;
@@ -62,13 +93,24 @@ export function Library() {
               ? `Biblioteca de ${profile.personaname}`
               : "Biblioteca"}
           </h1>
-          {data && (
+          {jogos && (
             <span className="text-sm font-medium tracking-widest text-muted-foreground tabular-nums">
-              {data.length} jogos
+              {resumo(jogos)}
             </span>
           )}
         </div>
       </div>
+
+      {data && (
+        <Input
+          type="search"
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar por nome…"
+          aria-label="Buscar jogo por nome"
+          className="mb-4 max-w-sm"
+        />
+      )}
 
       <SortBar value={sort} onChange={(s) => update({ sort: s })} />
       <GroupBar value={group} onChange={(g) => update({ group: g })} />
@@ -83,9 +125,11 @@ export function Library() {
 
       {isError && <Message role="alert">{(error as Error).message}</Message>}
 
-      {data && group === "genre" && (
+      {jogos?.length === 0 && <Message>Nenhum jogo encontrado.</Message>}
+
+      {jogos && group === "genre" && (
         <div className="space-y-8">
-          {byGenre(data).map(([genre, games]) => (
+          {byGenre(jogos).map(([genre, games]) => (
             <section key={genre}>
               <h2 className="mb-3 flex items-baseline gap-2 font-display text-sm uppercase tracking-widest text-muted-foreground">
                 {genre}
@@ -101,9 +145,9 @@ export function Library() {
         </div>
       )}
 
-      {data && group !== "genre" && (
+      {jogos && group !== "genre" && (
         <div className={GRID}>
-          {data.map((game) => (
+          {jogos.map((game) => (
             <GameCard key={game.appid} steamid={steamid} game={game} />
           ))}
         </div>

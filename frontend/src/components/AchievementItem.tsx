@@ -3,6 +3,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Achievement } from "@/api/client";
 
+// Intl é nativo: nenhuma lib de data para formatar uma linha.
+const DATA = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" });
+
 export function AchievementItem({ ach }: { ach: Achievement }) {
   return (
     <Card className={cn(!ach.achieved && "opacity-50")}>
@@ -23,6 +26,14 @@ export function AchievementItem({ ach }: { ach: Achievement }) {
           </strong>
           {ach.description && (
             <small className="text-muted-foreground">{ach.description}</small>
+          )}
+          {ach.unlocked_at && (
+            <time
+              dateTime={ach.unlocked_at}
+              className="text-xs text-muted-foreground tabular-nums"
+            >
+              Obtida em {DATA.format(new Date(ach.unlocked_at))}
+            </time>
           )}
         </span>
         <Badge

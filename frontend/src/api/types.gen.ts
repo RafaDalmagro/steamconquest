@@ -74,6 +74,8 @@ export interface components {
             icon_url?: string | null;
             /** Achieved */
             achieved: boolean;
+            /** Unlocked At */
+            unlocked_at?: string | null;
         };
         /**
          * Game
@@ -90,6 +92,8 @@ export interface components {
             name: string;
             /** Playtime Minutes */
             playtime_minutes: number;
+            /** Playtime 2Weeks Minutes */
+            playtime_2weeks_minutes?: number | null;
             /** Icon Url */
             icon_url?: string | null;
             /** Percent */

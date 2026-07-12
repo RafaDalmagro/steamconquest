@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 from app.core.cache import TTLCache
@@ -56,6 +57,7 @@ class AchievementsService:
                 appid=g["appid"],
                 name=g["name"],
                 playtime_minutes=g["playtime_forever"],
+                playtime_2weeks_minutes=g.get("playtime_2weeks"),
                 icon_url=(
                     _ICON_URL.format(appid=g["appid"], hash=g["img_icon_url"])
                     if g.get("img_icon_url")
@@ -101,7 +103,11 @@ class AchievementsService:
             await self._assert_exists(steamid)
             raise
         schema = await self._schema(appid)
-        name = schema.get("gameName", "")
+        name = (
+            schema.get("gameName")
+            or self._name_from_library(steamid, appid)
+            or f"App {appid}"
+        )
 
         if not player:
             return GameDetail(
@@ -129,6 +135,7 @@ class AchievementsService:
                     description=m.get("description"),
                     icon_url=m.get("icon") if is_achieved else m.get("icongray"),
                     achieved=is_achieved,
+                    unlocked_at=_unlocked_at(entry) if is_achieved else None,
                 )
             )
 
@@ -142,6 +149,16 @@ class AchievementsService:
             percent=_percent(achieved_count, total),
             achievements=achievements,
         )
+
+    def _name_from_library(self, steamid: str, appid: int) -> str:
+        """Nome do jogo pela biblioteca já cacheada — jogo sem schema não tem `gameName`.
+
+        Só lê o cache: buscar a biblioteca aqui custaria uma chamada à Steam só
+        para preencher um título. Quem chega pela biblioteca (o caminho normal)
+        já a tem em cache.
+        """
+        owned = self._cache.get(f"owned_games:{steamid}") or []
+        return next((g["name"] for g in owned if g["appid"] == appid), "")
 
     async def _assert_exists(self, steamid: str) -> None:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
@@ -218,6 +235,12 @@ class AchievementsService:
         return await self._cached(
             f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
         )
+
+
+def _unlocked_at(entry: dict) -> datetime | None:
+    """Epoch da Steam → datetime UTC. `0` significa "sem data", não 1970."""
+    ts = entry.get("unlocktime")
+    return datetime.fromtimestamp(ts, UTC) if ts else None
 
 
 def _percent(achieved: int, total: int) -> float:

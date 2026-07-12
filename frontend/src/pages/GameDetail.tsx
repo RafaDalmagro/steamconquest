@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
 
+import type { Achievement } from "@/api/client";
 import { useGameDetail } from "@/api/hooks";
 import { AchievementItem } from "@/components/AchievementItem";
 import { Message } from "@/components/Message";
@@ -9,6 +10,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type Filter = "all" | "achieved" | "locked";
+
+// Sem data → 0, que é menor que qualquer epoch real e mantém o comparador
+// numérico (Date.parse("") daria NaN, e NaN empata tudo silenciosamente).
+const quando = (ach: Achievement) =>
+  ach.unlocked_at ? Date.parse(ach.unlocked_at) : 0;
+
+// Obtidas primeiro (mais recente → mais antiga), depois as obtidas sem data
+// (unlocktime 0 da Steam), e por fim as pendentes. Array.sort é estável, então
+// pendentes e sem-data mantêm a ordem do schema sem precisar de critério extra.
+const porDesbloqueio = (a: Achievement, b: Achievement) =>
+  Number(b.achieved) - Number(a.achieved) || quando(b) - quando(a);
 
 export function GameDetail() {
   const { steamid = "", appid } = useParams();
@@ -43,9 +55,11 @@ export function GameDetail() {
     );
   }
 
-  const shown = data.achievements.filter((a) =>
-    filter === "all" ? true : filter === "achieved" ? a.achieved : !a.achieved,
-  );
+  const shown = data.achievements
+    .filter((a) =>
+      filter === "all" ? true : filter === "achieved" ? a.achieved : !a.achieved,
+    )
+    .sort(porDesbloqueio);
   const percent = Math.round(data.percent);
 
   return (

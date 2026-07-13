@@ -53,7 +53,7 @@ export function Library() {
   const [params, setParams] = useSearchParams();
 
   const rawSort = params.get("sort");
-  const sort: Sort = SORTS.some((s) => s.value === rawSort)
+  const sort: Sort = SORTS.some(([s]) => s === rawSort)
     ? (rawSort as Sort)
     : "playtime";
   const rawGroup = params.get("group");

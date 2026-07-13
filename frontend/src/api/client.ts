@@ -1,15 +1,17 @@
-import type { components } from "./types.gen";
+import type { components, paths } from "./types.gen";
 
 export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
 export type PlayerSummary = components["schemas"]["PlayerSummary"];
-export type Sort =
-	| "playtime"
-	| "name"
-	| "percent"
-	| "ach_count"
-	| "last_played";
+
+// Vem do OpenAPI, não de uma união escrita à mão: sort novo no backend vira erro
+// de tipo aqui até a UI tratá-lo. `npm run generate:api` é o que sincroniza.
+type GamesQuery = paths["/api/users/{steamid}/games"]["get"]["parameters"]["query"];
+export type Sort = NonNullable<NonNullable<GamesQuery>["sort"]>;
+
+// Não vem da API: é o estado de agrupamento da *UI*. A API só *inclui* o gênero
+// (`include=genres`); quem agrupa de fato é a Library, client-side.
 export type Group = "none" | "genre";
 
 const DEFAULT_API_BASE_URL = "/api";
@@ -56,16 +58,22 @@ export function buildApiUrl(
 	return `${normalizedBaseUrl}${normalizedPath}`;
 }
 
+// A API não deduz o que buscar: quem pede declara. Ordenar por progresso exige o
+// dado de conquistas, e agrupar por gênero exige o gênero — a tradução de intenção
+// da UI para os dados caros mora aqui, num lugar só.
 export const fetchGames = (
 	steamid: string,
 	sort: Sort,
 	group: Group = "none",
 ) => {
-	let url = buildApiUrl(
-		`/users/${encodeURIComponent(steamid)}/games?sort=${encodeURIComponent(sort)}`,
+	const params = new URLSearchParams({ sort });
+	if (sort === "percent" || sort === "ach_count")
+		params.append("include", "achievements");
+	if (group === "genre") params.append("include", "genres");
+
+	return getJSON<Game[]>(
+		buildApiUrl(`/users/${encodeURIComponent(steamid)}/games?${params}`),
 	);
-	if (group === "genre") url += "&group=genre";
-	return getJSON<Game[]>(url);
 };
 
 export const fetchPlayerSummary = (steamid: string) =>

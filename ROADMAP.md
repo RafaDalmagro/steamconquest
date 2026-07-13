@@ -39,6 +39,16 @@ Não há bug grave conhecido.
       visitante (o client pede `l=brazilian`, então vêm `name` e `description`)
       num `TTLCache` cujo teto conta entradas, não bytes. A tupla é decisão de
       design, não pendência.
+- [x] **Decisão acima revertida** (revisão de arquitetura, jul/2026): `ach_counts`
+      virou `player_ach:{steamid}:{appid}` e passou a ser a **única** porta para o
+      `GetPlayerAchievements` — biblioteca e detalhe leem a mesma entrada. O que
+      derrubou a objeção de memória foi notar que o app **descarta** o `name` e a
+      `description` do payload do jogador (o texto exibido vem do `schema:{appid}`,
+      cacheado por jogo): a entrada guarda só `apiname`/`achieved`/`unlocktime`, e
+      o cache deixa de inflar. Sai a tupla, sai o sentinela `(0, 0)`, sai o método
+      `_ach_counts` — e o detalhe aberto após `include=achievements` não paga mais
+      uma segunda ida à Steam. Invariante travada em
+      `test_cache_de_conquistas_nao_guarda_o_payload_gordo_da_steam`.
 - [x] **Jogo sem conquistas nunca entrava no cache** (achado ao investigar o item
       acima): `_ach_counts` devolvia `None`, que é o próprio sinal de miss do
       `_cached()` — então **todo** load com `?sort=percent` re-consultava a Steam
@@ -88,6 +98,23 @@ antes de implementar — feito.
       jogo real; jogo sem stats globais devolve **403** → detalhe abre sem
       raridade, sem 500. ⚠️ A Steam manda `percent` como **string** (`"49.9"`) —
       o client converte na fronteira (commit `2e27719`).
+
+## Correções pendentes
+
+- [ ] **Um jogo quebrado custa ~4,5s em toda carga da biblioteca** (achado pelo
+      `/verify` da revisão de arquitetura, jul/2026). O `GetPlayerAchievements` do
+      **appid 1966720 (Lethal Company)** devolve 5xx de forma consistente. O client
+      retenta 4× com backoff exponencial (0,5 + 1 + 2 = **3,5s dormindo**) e só
+      então levanta; o fan-out engole o erro (best-effort, correto) — mas a
+      **latência** não é engolida: `asyncio.gather` espera o jogo quebrado. Medido
+      com o cache quente: **4,7s** de resposta, dos quais ~4,5s são esse único jogo
+      (154 dos 155 jogos vêm do cache).
+      Falha **não** é cacheada, e isso está certo: 5xx pode ser transitório. A saída
+      provável é um **cache negativo curto para a falha** (~60s), no mesmo espírito
+      do CON-011 que já vale para gênero e raridade — "falhou agora há pouco, não
+      re-pague o backoff neste load". Deixaria a carga quente em ~0,1s.
+      Pré-existente: o antigo `_ach_counts` também não cacheava falha. Precisa de
+      ciclo SDD próprio (muda CON-011 e a tabela de TTLs).
 
 ## Dívida / processo
 

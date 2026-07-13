@@ -1,10 +1,18 @@
 import asyncio
+from collections.abc import Collection
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from app.core.cache import TTLCache
 from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
-from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
+from app.schemas.models import (
+    Achievement,
+    Game,
+    GameDetail,
+    Include,
+    PlayerSummary,
+    Sort,
+)
 
 _ICON_URL = (
     "https://media.steampowered.com/steamcommunity/public/images/apps/{appid}/{hash}.jpg"
@@ -39,6 +47,17 @@ _NAO_EXISTE = object()
 _NUNCA = datetime.min.replace(tzinfo=UTC)
 
 
+class Progresso(NamedTuple):
+    """Uma conquista do jogador, normalizada: `achieved` é bool, não o `0/1` da Steam.
+
+    É o que entra no cache — e pesa menos que o dict cru.
+    """
+
+    apiname: str
+    achieved: bool
+    unlocktime: int | None
+
+
 class AchievementsService:
     """Regra de negócio: monta biblioteca e detalhe a partir do client Steam.
 
@@ -52,7 +71,10 @@ class AchievementsService:
         self._concurrency = concurrency
 
     async def list_library(
-        self, steamid: str, sort: str = "playtime", group: str | None = None
+        self,
+        steamid: str,
+        sort: Sort = "playtime",
+        include: Collection[Include] = (),
     ) -> list[Game]:
         try:
             raw = await self._owned_games(steamid)
@@ -77,10 +99,20 @@ class AchievementsService:
             )
             for g in raw
         ]
-        if sort in ("percent", "ach_count"):
-            await self._fill_counts(steamid, games)
-        if group == "genre":
-            await self._fill_genres(games)
+        # O caller declara os dados caros que quer; a rota não os deduz do `sort`.
+        # Ordenar por % sem pedir conquistas é legal: os campos ficam None e o
+        # comparador os trata como 0 (a lista sai estável, não quebrada).
+        #
+        # Os dois fan-outs são independentes e batem em hosts diferentes (Web API ×
+        # loja), cada um com seu Semaphore: em paralelo, pedir os dois custa o mais
+        # lento, não a soma.
+        trabalhos = []
+        if "achievements" in include:
+            trabalhos.append(self._fill_counts(steamid, games))
+        if "genres" in include:
+            trabalhos.append(self._fill_genres(games))
+        if trabalhos:
+            await asyncio.gather(*trabalhos)
         _sort(games, sort)
         return games
 
@@ -107,7 +139,7 @@ class AchievementsService:
 
     async def game_detail(self, steamid: str, appid: int) -> GameDetail:
         try:
-            player = await self._client.get_player_achievements(steamid, appid)
+            player = await self._player_achievements(steamid, appid)
         except SteamDataUnavailable:
             # Mesma ambiguidade da biblioteca: só o perfil desempata conta
             # inexistente de conta privada. Pago só no caminho de erro.
@@ -138,19 +170,18 @@ class AchievementsService:
         achievements: list[Achievement] = []
         achieved_count = 0
         for entry in player:
-            is_achieved = entry.get("achieved") == 1
-            if is_achieved:
+            if entry.achieved:
                 achieved_count += 1
-            m = meta.get(entry["apiname"], {})
+            m = meta.get(entry.apiname, {})
             achievements.append(
                 Achievement(
-                    apiname=entry["apiname"],
-                    display_name=m.get("displayName") or entry["apiname"],
+                    apiname=entry.apiname,
+                    display_name=m.get("displayName") or entry.apiname,
                     description=m.get("description"),
-                    icon_url=m.get("icon") if is_achieved else m.get("icongray"),
-                    achieved=is_achieved,
-                    unlocked_at=_epoch(entry.get("unlocktime")) if is_achieved else None,
-                    global_percent=raridade.get(entry["apiname"]),
+                    icon_url=m.get("icon") if entry.achieved else m.get("icongray"),
+                    achieved=entry.achieved,
+                    unlocked_at=_epoch(entry.unlocktime) if entry.achieved else None,
+                    global_percent=raridade.get(entry.apiname),
                 )
             )
 
@@ -220,15 +251,14 @@ class AchievementsService:
         async def fill(game: Game) -> None:
             async with sem:
                 try:
-                    counts = await self._ach_counts(steamid, game.appid)
+                    achievements = await self._player_achievements(steamid, game.appid)
                 except SteamError:
                     return  # best-effort: um jogo que falha fica sem %, não quebra a página
-            achieved, total = counts
-            if not total:
+            if not achievements:
                 return  # jogo sem conquistas segue sem %, sem 0/0 na tela
-            game.achieved_count = achieved
-            game.total_count = total
-            game.percent = _percent(achieved, total)
+            game.achieved_count = sum(1 for a in achievements if a.achieved)
+            game.total_count = len(achievements)
+            game.percent = _percent(game.achieved_count, game.total_count)
 
         await asyncio.gather(*(fill(g) for g in games))
 
@@ -250,23 +280,35 @@ class AchievementsService:
             lambda: self._client.get_app_genres(appid),
         )
 
-    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int]:
-        """Contagem (obtidas, total) do jogo. `(0, 0)` = jogo sem conquistas.
+    async def _player_achievements(self, steamid: str, appid: int) -> list[Progresso]:
+        """Progresso do jogador no jogo. `[]` = jogo sem conquistas.
 
-        `(0, 0)` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
-        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e
-        cada load com sort=percent re-consultaria a Steam para *todos* esses
+        Único ponto que busca `GetPlayerAchievements`: a contagem da biblioteca e a
+        lista do detalhe são duas leituras deste cache, não duas idas à Steam.
+
+        Conquista sem `apiname` é descartada: sem nome não há como casar com o
+        schema nem com a raridade, e o `KeyError` derrubaria o fan-out inteiro (que
+        só engole `SteamError`).
+
+        `[]` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
+        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e cada
+        load com `include=achievements` re-consultaria a Steam para *todos* esses
         jogos. Mesmo cache negativo já usado em `genres` e `global_pct`.
         """
 
-        async def contar() -> tuple[int, int]:
-            achievements = await self._client.get_player_achievements(steamid, appid)
-            if not achievements:
-                return 0, 0
-            achieved = sum(1 for a in achievements if a.get("achieved") == 1)
-            return achieved, len(achievements)
+        async def buscar() -> list[Progresso]:
+            entries = await self._client.get_player_achievements(steamid, appid) or []
+            return [
+                Progresso(
+                    apiname=e["apiname"],
+                    achieved=e.get("achieved") == 1,
+                    unlocktime=e.get("unlocktime"),
+                )
+                for e in entries
+                if e.get("apiname")
+            ]
 
-        return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
+        return await self._cached(f"player_ach:{steamid}:{appid}", ACH_TTL, buscar)
 
     async def _global_percentages(self, appid: int) -> dict[str, float]:
         """Raridade por `apiname`. Best-effort: falha vira {}, nunca propaga.
@@ -307,7 +349,7 @@ def _percent(achieved: int, total: int) -> float:
     return achieved / total * 100 if total else 0.0
 
 
-def _sort(games: list[Game], sort: str) -> None:
+def _sort(games: list[Game], sort: Sort) -> None:
     if sort == "name":
         games.sort(key=lambda g: g.name.lower())
     elif sort == "percent":

@@ -94,9 +94,18 @@ class SteamClient:
         return players[0]
 
     async def get_player_achievements(self, steamid: str, appid: int) -> list[dict] | None:
+        """Progresso do jogador: `apiname`, `achieved` (0/1) e `unlocktime`.
+
+        **Sem `l=`**, de propósito: o parâmetro de idioma faz a Steam mandar também
+        `name` e `description` em cada conquista (payload dobra: medido 5076 → 2561
+        bytes num jogo de 43 conquistas), e o app descarta os dois — o texto exibido
+        vem do `GetSchemaForGame`, que é cacheado por *jogo* e compartilhado entre
+        jogadores. Pedir idioma aqui seria pagar o dobro em cada uma das N chamadas
+        do fan-out para jogar fora.
+        """
         data = await self._get(
             "/ISteamUserStats/GetPlayerAchievements/v1/",
-            {"steamid": steamid, "appid": appid, "l": self._lang},
+            {"steamid": steamid, "appid": appid},
         )
         stats = data.get("playerstats", {})
         if not stats.get("success") or "achievements" not in stats:

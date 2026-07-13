@@ -187,7 +187,7 @@ async def test_ordenacao_por_nome_e_alfabetica():
     assert [g.name for g in games] == ["Antichamber", "Half-Life 2", "Portal"]
 
 
-async def test_ordenacao_por_percent_faz_fanout_e_preenche_progresso():
+async def test_include_achievements_faz_fanout_e_preenche_progresso():
     client = FakeSteamClient(
         owned_games=[
             {"appid": 10, "name": "A", "playtime_forever": 999, "img_icon_url": "a"},
@@ -204,7 +204,7 @@ async def test_ordenacao_por_percent_faz_fanout_e_preenche_progresso():
     )
     service = make_service(client)
 
-    games = await service.list_library(STEAMID, sort="percent")
+    games = await service.list_library(STEAMID, sort="percent", include=["achievements"])
 
     assert [g.appid for g in games] == [20, 10]
     assert round(games[0].percent, 1) == 66.7
@@ -226,7 +226,7 @@ async def test_ordenacao_por_numero_de_conquistas_obtidas():
     )
     service = make_service(client)
 
-    games = await service.list_library(STEAMID, sort="ach_count")
+    games = await service.list_library(STEAMID, sort="ach_count", include=["achievements"])
 
     assert [g.appid for g in games] == [20, 10]
 
@@ -240,7 +240,7 @@ async def test_fanout_respeita_o_limite_do_semaphore():
     client = FakeSteamClient(owned_games=owned, achievements=achievements, delay=0.01)
     service = make_service(client, concurrency=2)
 
-    await service.list_library(STEAMID, sort="percent")
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
 
     assert client.max_active <= 2
 
@@ -258,7 +258,7 @@ async def test_fanout_tolera_falha_em_um_jogo_sem_quebrar():
     )
     service = make_service(client)
 
-    games = await service.list_library(STEAMID, sort="percent")
+    games = await service.list_library(STEAMID, sort="percent", include=["achievements"])
 
     assert {g.appid for g in games} == {10, 20}  # página não quebra
     falho = next(g for g in games if g.appid == 20)
@@ -278,16 +278,130 @@ async def test_repeticao_usa_cache_e_nao_refaz_fanout():
     )
     service = make_service(client)
 
-    await service.list_library(STEAMID, sort="percent")
-    await service.list_library(STEAMID, sort="percent")
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
 
     assert sorted(client.ach_calls) == [10, 20]  # cada jogo buscado uma única vez
+
+
+async def test_sort_sozinho_nao_busca_conquistas():
+    """`sort` ordena; quem decide o que buscar é `include`.
+
+    Sem isso, a ordenação carrega um efeito colateral invisível: pedir `percent`
+    dispara N chamadas à Steam que o caller nunca pediu.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: [{"apiname": "x", "achieved": 1}]},
+    )
+    service = make_service(client)
+
+    games = await service.list_library(STEAMID, sort="percent")
+
+    assert client.ach_calls == []  # nenhum fan-out sem include
+    assert games[0].percent is None  # e a lista não quebra: só vem sem %
+
+
+async def test_detalhe_reaproveita_as_conquistas_ja_buscadas_pelo_fanout():
+    """Biblioteca e detalhe leem o mesmo dado da Steam — logo, o mesmo cache.
+
+    Quem ordena por % e clica num jogo já tem as conquistas dele em mãos: pagar a
+    chamada de novo é queimar quota por nada.
+    """
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"},
+        ],
+        achievements={10: [{"apiname": "x", "achieved": 1}]},
+        schemas={10: {"gameName": "A", "achievements": []}},
+    )
+    service = make_service(client)
+
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10]  # o detalhe não re-consulta a Steam
+    assert detail.achieved_count == 1
+
+
+async def test_fanout_reaproveita_as_conquistas_ja_buscadas_pelo_detalhe():
+    """A recíproca: quem chega pelo deep-link do detalhe já semeia o cache do %."""
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"},
+        ],
+        achievements={10: [{"apiname": "x", "achieved": 1}]},
+        schemas={10: {"gameName": "A", "achievements": []}},
+    )
+    service = make_service(client)
+
+    await service.game_detail(STEAMID, 10)
+    games = await service.list_library(STEAMID, sort="percent", include=["achievements"])
+
+    assert client.ach_calls == [10]  # o fan-out não re-consulta a Steam
+    assert games[0].percent == 100.0
+
+
+async def test_conquista_malformada_nao_derruba_a_biblioteca():
+    """Entry sem `apiname` é lixo da Steam, não motivo para 500.
+
+    O fan-out é best-effort por jogo (REQ-004), mas ele só engole `SteamError` —
+    um KeyError aqui escaparia do `except` e derrubaria o `gather` inteiro, isto é,
+    a biblioteca toda por causa de uma conquista de um jogo.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={
+            10: [
+                {"achieved": 1},  # sem apiname: a Steam às vezes manda lixo
+                {"apiname": "x", "achieved": 1},
+            ]
+        },
+    )
+    service = make_service(client)
+
+    games = await service.list_library(STEAMID, sort="percent", include=["achievements"])
+
+    assert games[0].percent == 100.0  # a entrada sem nome é descartada, não conta
+    assert games[0].total_count == 1
+
+
+async def test_cache_de_conquistas_nao_guarda_o_payload_gordo_da_steam():
+    """O teto do TTLCache conta entradas, não bytes — e o steamid vem da URL.
+
+    A Steam manda `name` e `description` (o client pede `l=brazilian`) em cada
+    conquista, e o app os descarta: o texto exibido vem do `schema:{appid}`, que é
+    cacheado por jogo e compartilhado. Guardar o payload cru por `steamid × appid`
+    faria o cache inchar sem que o teto percebesse.
+    """
+    cache = TTLCache()
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={
+            10: [
+                {
+                    "apiname": "x",
+                    "achieved": 1,
+                    "unlocktime": 1_600_000_000,
+                    "name": "Nome longo vindo da Steam",
+                    "description": "Descrição longa vinda da Steam",
+                }
+            ]
+        },
+    )
+    service = AchievementsService(client, cache)
+
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
+
+    (entrada,) = cache.get(f"player_ach:{STEAMID}:10")
+    assert entrada._fields == ("apiname", "achieved", "unlocktime")
+    assert entrada.achieved is True  # normalizado na fronteira: bool, não o 0/1 da Steam
 
 
 async def test_jogo_sem_conquistas_tambem_e_cacheado():
     """Cache negativo: "este jogo não tem conquistas" é uma resposta, não um miss.
 
-    Sem isso, todo load com sort=percent re-consulta a Steam para cada jogo sem
+    Sem isso, todo load com include=achievements re-consulta a Steam para cada jogo sem
     conquistas — uma sangria de quota que se repete para sempre, não uma vez.
     """
     client = FakeSteamClient(
@@ -299,8 +413,8 @@ async def test_jogo_sem_conquistas_tambem_e_cacheado():
     )
     service = make_service(client)
 
-    await service.list_library(STEAMID, sort="percent")
-    games = await service.list_library(STEAMID, sort="percent")
+    await service.list_library(STEAMID, sort="percent", include=["achievements"])
+    games = await service.list_library(STEAMID, sort="percent", include=["achievements"])
 
     assert sorted(client.ach_calls) == [10, 20]  # o segundo load não re-bate no 20
     sem_conquistas = next(g for g in games if g.appid == 20)
@@ -320,7 +434,7 @@ async def test_cache_da_biblioteca_nao_vaza_entre_steamids():
     assert client.owned_calls == ["11111111111111111", "22222222222222222"]
 
 
-async def test_agrupar_por_genero_preenche_generos():
+async def test_include_genres_preenche_os_generos():
     client = FakeSteamClient(
         owned_games=[
             {"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"},
@@ -330,7 +444,7 @@ async def test_agrupar_por_genero_preenche_generos():
     )
     service = make_service(client)
 
-    games = await service.list_library(STEAMID, group="genre")
+    games = await service.list_library(STEAMID, include=["genres"])
 
     por_appid = {g.appid: g.genres for g in games}
     assert por_appid == {10: ["Ação", "Aventura"], 20: ["RPG"]}
@@ -359,7 +473,7 @@ async def test_jogo_sem_genero_fica_vazio_sem_quebrar():
     )
     service = make_service(client)
 
-    games = await service.list_library(STEAMID, group="genre")
+    games = await service.list_library(STEAMID, include=["genres"])
 
     por_appid = {g.appid: g.genres for g in games}
     assert por_appid == {10: ["Ação"], 20: []}  # página não quebra
@@ -374,8 +488,8 @@ async def test_genero_vazio_e_cacheado_para_nao_re_martelar_a_loja():
     )
     service = make_service(client)
 
-    await service.list_library(STEAMID, group="genre")
-    await service.list_library(STEAMID, group="genre")
+    await service.list_library(STEAMID, include=["genres"])
+    await service.list_library(STEAMID, include=["genres"])
 
     assert client.genre_calls == [10]  # segundo load usa o cache, não re-bate
 
@@ -387,8 +501,8 @@ async def test_generos_sao_cacheados():
     )
     service = make_service(client)
 
-    await service.list_library(STEAMID, group="genre")
-    await service.list_library(STEAMID, group="genre")
+    await service.list_library(STEAMID, include=["genres"])
+    await service.list_library(STEAMID, include=["genres"])
 
     assert client.genre_calls == [10]  # gênero é estático: buscado uma única vez
 

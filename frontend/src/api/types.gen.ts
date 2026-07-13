@@ -83,9 +83,9 @@ export interface components {
          * Game
          * @description Jogo da biblioteca para exibição na index.
          *
-         *     `percent`/`achieved_count`/`total_count` só são preenchidos quando a
-         *     ordenação exige conquistas (sort=percent/ach_count). `genres` só é
-         *     preenchido quando `group=genre`.
+         *     `percent`/`achieved_count`/`total_count` só são preenchidos com
+         *     `include=achievements`; `genres`, com `include=genres`. Sem `include`, a
+         *     biblioteca custa uma única chamada à Steam e esses campos vêm vazios.
          */
         Game: {
             /** Appid */
@@ -203,8 +203,8 @@ export interface operations {
     list_games_api_users__steamid__games_get: {
         parameters: {
             query?: {
-                sort?: string;
-                group?: string | null;
+                sort?: "playtime" | "name" | "percent" | "ach_count" | "last_played";
+                include?: ("achievements" | "genres")[];
             };
             header?: never;
             path: {

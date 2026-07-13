@@ -284,6 +284,29 @@ async def test_repeticao_usa_cache_e_nao_refaz_fanout():
     assert sorted(client.ach_calls) == [10, 20]  # cada jogo buscado uma única vez
 
 
+async def test_jogo_sem_conquistas_tambem_e_cacheado():
+    """Cache negativo: "este jogo não tem conquistas" é uma resposta, não um miss.
+
+    Sem isso, todo load com sort=percent re-consulta a Steam para cada jogo sem
+    conquistas — uma sangria de quota que se repete para sempre, não uma vez.
+    """
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"},
+            {"appid": 20, "name": "Sem conquistas", "playtime_forever": 1, "img_icon_url": "b"},
+        ],
+        achievements={10: [{"apiname": "x", "achieved": 1}], 20: None},
+    )
+    service = make_service(client)
+
+    await service.list_library(STEAMID, sort="percent")
+    games = await service.list_library(STEAMID, sort="percent")
+
+    assert sorted(client.ach_calls) == [10, 20]  # o segundo load não re-bate no 20
+    sem_conquistas = next(g for g in games if g.appid == 20)
+    assert sem_conquistas.percent is None  # segue sem %, como antes
+
+
 async def test_cache_da_biblioteca_nao_vaza_entre_steamids():
     client = FakeSteamClient(
         owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}]

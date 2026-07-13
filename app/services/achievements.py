@@ -223,9 +223,9 @@ class AchievementsService:
                     counts = await self._ach_counts(steamid, game.appid)
                 except SteamError:
                     return  # best-effort: um jogo que falha fica sem %, não quebra a página
-            if counts is None:
-                return
             achieved, total = counts
+            if not total:
+                return  # jogo sem conquistas segue sem %, sem 0/0 na tela
             game.achieved_count = achieved
             game.total_count = total
             game.percent = _percent(achieved, total)
@@ -250,11 +250,19 @@ class AchievementsService:
             lambda: self._client.get_app_genres(appid),
         )
 
-    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int] | None:
-        async def contar() -> tuple[int, int] | None:
+    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int]:
+        """Contagem (obtidas, total) do jogo. `(0, 0)` = jogo sem conquistas.
+
+        `(0, 0)` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
+        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e
+        cada load com sort=percent re-consultaria a Steam para *todos* esses
+        jogos. Mesmo cache negativo já usado em `genres` e `global_pct`.
+        """
+
+        async def contar() -> tuple[int, int]:
             achievements = await self._client.get_player_achievements(steamid, appid)
             if not achievements:
-                return None  # jogo sem conquistas: nada a cachear
+                return 0, 0
             achieved = sum(1 for a in achievements if a.get("achieved") == 1)
             return achieved, len(achievements)
 

@@ -1,82 +1,112 @@
 ---
-title: App Web Pessoal de Conquistas Steam — Especificação de Comportamento
-version: 1.1
+title: App Web de Conquistas Steam — Especificação de Comportamento
+version: 2.0
 date_created: 2026-06-28
 last_updated: 2026-07-12
 owner: rafa.limadalmagro
-tags: [architecture, design, app, steam, fastapi]
+tags: [architecture, design, app, steam, fastapi, react]
 ---
 
 # Introduction
 
-Especificação de comportamento de um app web **pessoal** (single-user) para
-acompanhar biblioteca, tempo de jogo e progresso de conquistas de **uma** conta
-Steam. A consulta é em **tempo real** contra a Steam Web API (**sem banco de
-dados**). Arquitetura **fullstack**: backend FastAPI expõe **API JSON** sob
-`/api`; frontend é um **SPA React** (Vite + Tailwind + shadcn/ui) consumindo a
-API via **TanStack React Query**. Em produção o FastAPI serve o build estático
-do SPA; em dev o Vite serve o front com proxy `/api` → FastAPI. Esta spec é a
-fonte de verdade da fase SDD e precede o PLAN e o ciclo RED/GREEN/REFACTOR.
+Especificação de comportamento de um app web para acompanhar biblioteca, tempo de
+jogo e progresso de conquistas de uma conta Steam. A consulta é em **tempo real**
+contra a Steam Web API (**sem banco de dados**). Arquitetura **fullstack**:
+backend FastAPI expõe **API JSON** sob `/api`; frontend é um **SPA React** (Vite +
+Tailwind + shadcn/ui) consumindo a API via **TanStack React Query**. Em produção o
+FastAPI serve o build estático do SPA; em dev o Vite serve o front com proxy
+`/api` → FastAPI. Esta spec é a fonte de verdade da fase SDD e precede o PLAN e o
+ciclo RED/GREEN/REFACTOR.
+
+> **v2.0** — a v1.x descrevia um app server-rendered (Jinja2, rota `GET /`,
+> `STEAM_ID` via env, exposição só em localhost). Nada disso existe mais: o app é
+> API JSON + SPA, o `steamid` vem da URL e o app está publicado. Esta versão
+> corrige as seções defasadas e escreve os requisitos das features que já foram
+> entregues sem nunca terem sido especificadas (REQ-050..054).
 
 ## 1. Purpose & Scope
 
-**Propósito:** definir, de forma não ambígua, o comportamento observável do app
-— rotas, ordenação, cálculo de progresso, filtros, cache, tratamento de erro e
-contratos com a Steam — suficiente para outro agente implementar via TDD sem
+**Propósito:** definir, de forma não ambígua, o comportamento observável do app —
+rotas, ordenação, agrupamento, cálculo de progresso, filtros, cache, proteção de
+quota e tratamento de erro — suficiente para outro agente implementar via TDD sem
 fazer perguntas.
 
 **No escopo:**
 - Listar biblioteca + tempo de jogo (playtime).
-- Detalhe de jogo: conquistas obtidas × pendentes, % de progresso.
-- Ordenação da biblioteca (index): playtime, nome, % concluído, nº de conquistas.
-- Filtro por status (obtidas/pendentes) na página de detalhe.
+- Detalhe de jogo: conquistas obtidas × pendentes, % de progresso, raridade global.
+- Ordenação da biblioteca: playtime, nome, % concluído, nº de conquistas, última
+  vez jogado.
+- Agrupamento da biblioteca por gênero.
+- Busca por nome (client-side) e filtro por status na página de detalhe.
+- Perfil público do jogador (nome e avatar).
 
 **Fora do escopo (não implementar):**
-- Multiusuário, login Steam OpenID, autenticação de qualquer tipo.
+- Login Steam OpenID ou autenticação de qualquer tipo.
 - Comparação entre jogos, histórico/snapshots, qualquer persistência relacional.
 - Banco de dados, fila, Redis ou serviço de apoio com estado durável.
 
 **Audiência:** o desenvolvedor/agente que implementará o app.
 
 **Premissas:**
-- Conta Steam com `STEAM_API_KEY` e `STEAM_ID` válidos disponíveis via env.
-- App roda em `uvicorn` com **1 worker** (cache é estado em processo).
-- Exposição apenas em **localhost/LAN** — ausência de autenticação é aceitável.
+- `STEAM_API_KEY` válida disponível via env. **Não existe `STEAM_ID` em
+  configuração** — o `steamid` é parâmetro de rota, informado por quem acessa.
+- O app é **multiusuário de leitura, sem login**: qualquer visitante consulta
+  qualquer SteamID. Isso é aceitável porque **todo dado exposto já é público na
+  Steam** — a API só o reempacota. Perfil privado simplesmente não devolve dados.
+- App roda em `uvicorn` com **1 worker** (o cache é estado em processo).
+- **O app está publicado na internet** (SPA na Vercel, API em host Docker). Como o
+  `steamid` é input público, o app **precisa** se defender: validação de entrada
+  (REQ-052), teto de quota (REQ-053) e teto de memória do cache (REQ-054).
 
 ## 2. Definitions
 
 - **Steam Web API**: API HTTP oficial da Valve para dados de jogadores/jogos.
 - **appid**: identificador numérico de um jogo na Steam.
+- **SteamID64**: identificador do jogador, **17 dígitos numéricos**.
 - **playtime**: tempo total jogado (campo `playtime_forever`, em minutos).
 - **conquista (achievement)**: objetivo do jogo; tem flag `achieved` (0/1).
-- **schema (do jogo)**: metadados das conquistas (nome, descrição, ícone),
-  obtidos via `GetSchemaForGame`.
+- **schema (do jogo)**: metadados das conquistas (nome, descrição, ícone), obtidos
+  via `GetSchemaForGame`.
 - **% de progresso**: `conquistas_obtidas / total_conquistas * 100`.
+- **raridade global**: % de **todos** os jogadores da Steam que obteve uma
+  conquista. É por jogo, não por jogador.
 - **fan-out**: disparo de N chamadas HTTP (uma por jogo) para montar uma visão.
 - **TTLCache**: cache em memória com expiração por tempo (volátil, por processo).
-- **SSR**: Server-Side Rendering (HTML montado no servidor, Jinja2).
+- **token bucket**: teto de vazão de chamadas à Steam, para proteger a quota da
+  chave.
+- **SPA**: Single-Page Application (React; o HTML não é montado no servidor).
+- **best-effort**: dado decorativo cuja falha é engolida — nunca derruba a página.
 - **supports_achievements**: indica se o jogo tem sistema de conquistas.
 
 ## 3. Requirements, Constraints & Guidelines
 
-### Funcionais
-- **REQ-001**: A rota `GET /` lista os jogos da conta com nome, ícone e playtime.
-- **REQ-002**: `GET /` aceita o parâmetro de query `sort` com valores:
-  `playtime` (default), `name`, `percent`, `ach_count`, `last_played` (REQ-042).
-- **REQ-003**: Para `sort=playtime` e `sort=name`, `GET /` executa **uma única**
-  chamada (`GetOwnedGames`) e **não** busca conquistas.
-- **REQ-004**: Para `sort=percent` e `sort=ach_count`, `GET /` executa fan-out de
-  `GetPlayerAchievements` para todos os jogos e a lista **exibe** o % por jogo.
-- **REQ-005**: A rota `GET /game/{appid}` exibe a lista completa de conquistas do
-  jogo, cada uma marcada como obtida ou pendente, com nome/descrição/ícone, além
-  da contagem (obtidas/total) e do % de progresso.
+### Funcionais — biblioteca e detalhe
+
+- **REQ-001**: `GET /api/users/{steamid}/games` devolve os jogos da conta com
+  nome, ícone e playtime, como JSON `list[Game]`.
+- **REQ-002**: `GET /api/users/{steamid}/games` aceita o parâmetro de query `sort`
+  com os valores: `playtime` (default), `name`, `percent`, `ach_count`,
+  `last_played`. Valor ausente ou inválido ⇒ trata como `playtime` (não é erro).
+- **REQ-003**: Para `sort=playtime`, `sort=name` e `sort=last_played`, a rota
+  executa **uma única** chamada (`GetOwnedGames`) e **não** busca conquistas.
+- **REQ-004**: Para `sort=percent` e `sort=ach_count`, a rota executa fan-out de
+  `GetPlayerAchievements` para todos os jogos e a resposta **inclui** o % e a
+  contagem por jogo. O fan-out é **best-effort por jogo**: um jogo que falhe fica
+  sem %, sem derrubar a lista.
+- **REQ-005**: `GET /api/users/{steamid}/games/{appid}` devolve a lista completa
+  de conquistas do jogo, cada uma marcada como obtida ou pendente, com
+  nome/descrição/ícone, além da contagem (obtidas/total) e do % de progresso.
 - **REQ-006**: O % e a contagem derivam de `GetPlayerAchievements` (flag
   `achieved`). O schema **não** é necessário para o percentual, apenas para
   nome/descrição/ícone das conquistas.
-- **REQ-007**: O filtro por status na página de detalhe é **client-side** (JS),
-  operando sobre a lista já renderizada, sem nova chamada ao servidor/Steam.
+- **REQ-007**: O filtro por status na página de detalhe é **client-side**,
+  operando sobre a lista já carregada, sem nova chamada ao servidor/Steam.
 - **REQ-008**: Jogo sem sistema de conquistas é tratado como
   `supports_achievements=False` e renderizado sem quebrar (mensagem informativa).
+- **REQ-009**: O nome do jogo no detalhe vem da **biblioteca** (nome da loja)
+  quando disponível em cache; o `gameName` do schema é apenas plano B, porque às
+  vezes é o codinome interno do estúdio (ex.: `GFREMP2` para Remnant II). Último
+  recurso: `App {appid}`.
 
 ### Funcionais — custo zero de quota
 
@@ -84,16 +114,16 @@ Requisitos que não acrescentam nenhuma chamada à Steam: derivam de campos que 
 vêm nas respostas atuais ou de agregação client-side.
 
 - **REQ-030**: O detalhe exibe a **data de desbloqueio** de cada conquista obtida
-  (`unlocktime` do `GetPlayerAchievements`) e ordena a lista: obtidas primeiro,
-  da mais recente para a mais antiga; pendentes depois, na ordem do schema.
+  (`unlocktime` do `GetPlayerAchievements`) e ordena a lista: obtidas primeiro, da
+  mais recente para a mais antiga; pendentes depois, na ordem do schema.
   `unlocktime` ausente ou `0` numa conquista obtida ⇒ sem data (a Steam devolve
   `0` para desbloqueios muito antigos) — a conquista continua listada.
-- **REQ-031**: A biblioteca oferece **busca por nome**, filtrando **client-side**
-  a lista já carregada (mesmo princípio do REQ-007): zero chamadas ao servidor.
-  A busca é estado efêmero da UI e **não** entra na URL (ao contrário de `sort` e
+- **REQ-031**: A biblioteca oferece **busca por nome**, filtrando **client-side** a
+  lista já carregada (mesmo princípio do REQ-007): zero chamadas ao servidor. A
+  busca é estado efêmero da UI e **não** entra na URL (ao contrário de `sort` e
   `group`).
-- **REQ-032**: A biblioteca exibe um **resumo agregado** do que está em tela:
-  nº de jogos e horas totais. Quando os dados de conquista estiverem carregados
+- **REQ-032**: A biblioteca exibe um **resumo agregado** do que está em tela: nº de
+  jogos e horas totais. Quando os dados de conquista estiverem carregados
   (`sort=percent` ou `sort=ach_count`), também o nº de jogos 100% concluídos. O
   resumo reflete a lista **após** a busca do REQ-031.
 - **REQ-033**: O card do jogo exibe um badge de **jogado recentemente** quando o
@@ -111,7 +141,9 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
   com junção por `apiname`. A UI mostra o % e marca como **rara** a conquista
   abaixo de 10%. É a única feature pós-v1.0 que **custa quota**: +1 chamada por
   jogo, cacheada em `global_pct:{appid}` — a chave é o **jogo**, não o jogador,
-  logo o cache é compartilhado entre todos os visitantes.
+  logo o cache é compartilhado entre todos os visitantes. A Steam devolve
+  `percent` como **string** (`"49.9"`); o client converte para `float` na
+  fronteira.
 - **REQ-041**: A raridade é **decoração e nunca derruba a página**: jogo sem
   estatísticas globais (403 ou lista vazia), falha de rede ou rate limit ⇒ as
   conquistas são renderizadas sem raridade, e o detalhe responde 200. Mesma
@@ -122,71 +154,154 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
   significa **nunca jogado** (não 1970) ⇒ esses jogos vão para o fim da lista. O
   card exibe a data.
 
+### Funcionais — entregues na v2.0 (antes não especificados)
+
+- **REQ-050**: `GET /api/users/{steamid}/games?group=genre` preenche o campo
+  `genres` de cada jogo, para que o SPA agrupe a biblioteca por gênero
+  (client-side, pelo primeiro gênero). O gênero **não existe na Web API oficial**:
+  vem do endpoint **não-oficial da loja** (`store/appdetails`), que não usa a
+  `STEAM_API_KEY`. O preenchimento é **lazy** (só quando `group=genre`) e **100%
+  best-effort**: a loja rate-limita agressivo, e qualquer falha devolve lista
+  vazia ⇒ o jogo cai em "Sem categoria" e a biblioteca **nunca quebra**. Valor de
+  `group` ausente ou inválido ⇒ sem agrupamento.
+- **REQ-051**: `GET /api/users/{steamid}/profile` devolve o nome de exibição
+  (`personaname`) e o avatar (`avatarfull`) do jogador, via
+  `ISteamUser/GetPlayerSummaries/v2`. Este endpoint é também o **desempate de
+  erro** do app: a Steam responde "biblioteca indisponível" tanto para conta
+  inexistente quanto para perfil privado, e só o perfil separa os dois casos
+  (`players: []` ⇒ conta não existe; player presente ⇒ perfil privado). O
+  desempate é pago **apenas no caminho de erro**.
+- **REQ-052**: O `steamid` de qualquer rota deve ter **17 dígitos numéricos**.
+  Fora disso ⇒ **422** com `{"detail": "<mensagem pt-BR>"}`, **antes** de qualquer
+  chamada à Steam. O SPA também valida, mas a validação do servidor é a rede de
+  segurança — o `steamid` é input público.
+- **REQ-053**: Toda chamada que usa a `STEAM_API_KEY` passa por um **token bucket
+  global** no client (`steam_rate_per_minute` / `steam_rate_burst`), que protege a
+  quota da chave contra qualquer chamador. O teto é consumido **por tentativa**
+  (o retry também gasta quota), e estourá-lo ⇒ `SteamRateLimitError` ⇒ **429**. O
+  endpoint de gênero (loja) **não** passa pelo bucket: não usa a chave, logo não
+  há quota a proteger.
+- **REQ-054**: O `TTLCache` tem **teto de entradas** (`_MAXSIZE`). Como o
+  `steamid` vem da URL, o espaço de chaves é controlado por quem chama: sem teto,
+  IDs sempre novos fazem o dict crescer indefinidamente (entradas nunca relidas
+  nunca expiram) até derrubar o processo. Ao encher, descarta primeiro uma entrada
+  **expirada**; não havendo, a mais antiga.
+
 ### Cache
-- **REQ-010**: Resultados são cacheados em `TTLCache` por processo, volátil.
-  Chaves: `owned_games`, `ach_counts:{appid}`, `schema:{appid}`.
-- **CON-010**: TTL `owned_games` = 300s; `ach_counts:{appid}` = 300s;
-  `schema:{appid}` = 86400s (schema é quase imutável); `global_pct:{appid}` =
-  86400s quando há dados, 3600s quando vem vazio (o vazio pode ser falha
-  transitória e não merece 24h de cache negativo). Valores configuráveis.
+
+- **REQ-010**: Resultados são cacheados em `TTLCache` por processo, **volátil**
+  (não é banco de dados). Chaves e TTLs:
+
+| Chave | TTL (hit) | TTL (miss/vazio) | Escopo |
+|---|---|---|---|
+| `owned_games:{steamid}` | 300s | — | jogador |
+| `ach_counts:{steamid}:{appid}` | 300s | 300s | jogador × jogo |
+| `player_summary:{steamid}` | 300s | 60s (conta inexistente) | jogador |
+| `schema:{appid}` | 86400s | — | jogo |
+| `global_pct:{appid}` | 86400s | 3600s | jogo |
+| `genres:{appid}` | 604800s | 3600s | jogo |
+
+- **CON-010**: As chaves de dado **por jogador** incluem obrigatoriamente o
+  `steamid`. Omiti-lo vazaria dados entre jogadores.
+- **CON-011**: **Cache negativo é obrigatório onde o "não" é uma resposta**, e não
+  um erro:
+  - jogo **sem conquistas** ⇒ cacheia `(0, 0)` em `ach_counts`. Devolver "nada" e
+    não cachear faria **todo** load com `sort=percent` re-consultar a Steam para
+    **todos** esses jogos, para sempre;
+  - conta **inexistente** ⇒ cacheia o "não" (TTL curto), para que marretar o mesmo
+    ID inválido não queime a quota da chave;
+  - gênero/raridade **vazios** ⇒ TTL curto (o vazio pode ser um 429 transitório, e
+    não ausência real — não merece 24h/7d de cache).
+- **CON-012**: TTL curto para dado do jogador (muda), TTL longo para dado do jogo
+  (não muda). Valores configuráveis.
 
 ### Concorrência / Resiliência
-- **REQ-020**: O fan-out é limitado por `Semaphore(steam_concurrency)` para
-  evitar 429 em contas grandes.
+
+- **REQ-020**: O fan-out é limitado por `Semaphore(steam_concurrency)` para evitar
+  429 em contas grandes.
 - **REQ-021**: O client HTTP aplica retry com backoff em respostas 429 e 5xx.
   Esgotado o retry, propaga exceção tipada.
 - **CON-020**: `httpx.AsyncClient` deve ter timeout explícito (connect/read 10s).
 
 ### Arquitetura (invariantes)
+
 - **PAT-001**: Dependências apontam para o domínio: `web → services → steam`.
-- **PAT-002**: `web/` não importa `httpx` nem fala com a Steam direto.
+- **PAT-002**: `web/` não importa `httpx` nem fala com a Steam direto; devolve
+  modelos de domínio como **JSON** (não renderiza HTML).
 - **PAT-003**: `services/` não importa `Request`/`fastapi`.
 - **PAT-004**: `steam/` é a única camada que faz HTTP com a Steam; seus métodos
   retornam dict desembrulhado ou levantam exceção tipada.
 - **PAT-005**: Wiring (`AsyncClient` + `TTLCache` + service) no `lifespan` de
   `main.py`, em `app.state`, injetado por `Depends(get_service)`.
+- **PAT-006**: **O frontend nunca fala com a Steam** — só com `/api`. O FastAPI é
+  o único gateway da Steam.
 - **CON-030**: Sem banco, fila, Redis ou OpenID. Sem abstrações especulativas.
 
 ### Segurança
-- **SEC-001**: `STEAM_API_KEY` e `STEAM_ID` apenas via env/`.env`. Nunca em
-  template, resposta, commit ou log. `.env` no `.gitignore`.
-- **SEC-002**: A key trafega apenas na querystring server-side. Log `DEBUG` do
+
+- **SEC-001**: `STEAM_API_KEY` apenas via env/`.env`. Nunca em resposta da API,
+  bundle do frontend, commit ou log. `.env` no `.gitignore`.
+- **SEC-002**: A key trafega apenas na querystring **server-side**. Log `DEBUG` do
   `httpx` **proibido** (vaza a URL com a chave).
+- **SEC-003**: O bundle do frontend é **público**: só variáveis `VITE_*` chegam
+  nele, e nenhuma delas pode conter segredo.
+
+### Configuração / Ambientes
+
+- **CON-040**: Config **só por ambiente** (12-factor). `ENVIRONMENT=dev|prod`
+  (default `dev`). Em `prod`, `/docs`, `/redoc` e `/openapi.json` são
+  **desligados**; em dev ficam ativos porque a geração de tipos do frontend lê o
+  schema.
+- **CON-041**: **Same-origin nos dois ambientes** — dev via proxy do Vite, prod via
+  rewrite `/api/*`. Logo `CORS_ORIGINS` fica vazio e o middleware de CORS só é
+  registrado quando não é vazio.
 
 ### Idioma
+
 - **GUD-001**: `GetSchemaForGame` é chamado com `l=brazilian`; quando faltar
   tradução, usar o texto em inglês retornado.
 - **GUD-002**: Comentários de código e mensagens ao usuário em pt-BR.
 
 ## 4. Interfaces & Data Contracts
 
-### Rotas HTTP (app)
+### Rotas HTTP (API JSON, prefixo `/api`)
 
 | Método | Rota | Query | Resposta |
 |---|---|---|---|
-| GET | `/api/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`} | JSON `list[Game]` |
-| GET | `/api/games/{appid}` | — | JSON `GameDetail` |
+| GET | `/api/users/{steamid}/profile` | — | JSON `PlayerSummary` |
+| GET | `/api/users/{steamid}/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`}; `group` ∈ {`genre`} | JSON `list[Game]` |
+| GET | `/api/users/{steamid}/games/{appid}` | — | JSON `GameDetail` |
 
-- `sort` ausente/inválido ⇒ trata como `playtime` (default).
+- `{steamid}`: 17 dígitos (REQ-052). Fora do padrão ⇒ **422**.
+- `sort`/`group` ausentes ou inválidos ⇒ default (`playtime` / sem agrupamento).
+  **Não** são erro.
 - Paths não-`/api` são servidos pelo SPA (StaticFiles + fallback p/ `index.html`,
-  para deep-link de rotas do React Router como `/game/{appid}`).
-- O filtro por status (detalhe) e a exibição/loading são **client-side** no SPA
-  (React Query dá o estado de carregamento; o filtro roda no navegador).
+  para deep-link de rotas do React Router).
+- Busca por nome, filtro por status e agrupamento visual são **client-side** no
+  SPA.
 
 ### Steam Web API (fonte de verdade: `Steam_Web_API_Documentation.md`)
 
 | Endpoint | Parâmetros-chave | Uso |
 |---|---|---|
 | `IPlayerService/GetOwnedGames/v1` | `steamid`, `include_appinfo=1`, `include_played_free_games=1` | biblioteca + playtime + nome + `img_icon_url` + `playtime_2weeks` (REQ-033) + `rtime_last_played` (REQ-042) |
-| `ISteamUserStats/GetPlayerAchievements/v1` | `steamid`, `appid` | flag `achieved` (0/1) por conquista → % e contagem; `unlocktime` (REQ-030) |
-| `ISteamUserStats/GetSchemaForGame/v2` | `appid`, `l=brazilian` | `availableGameStats.achievements`: `name`/`displayName`/`description`/`icon` |
+| `ISteamUserStats/GetPlayerAchievements/v1` | `steamid`, `appid`, `l=brazilian` | flag `achieved` (0/1) por conquista → % e contagem; `unlocktime` (REQ-030) |
+| `ISteamUserStats/GetSchemaForGame/v2` | `appid`, `l=brazilian` | `availableGameStats.achievements`: `name`/`displayName`/`description`/`icon`/`icongray` |
 | `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` | **`gameid`** | raridade global por `apiname` (REQ-040) |
+| `ISteamUser/GetPlayerSummaries/v2` | `steamids` | `personaname` + `avatarfull`; desempate de erro (REQ-051) |
+| `store/appdetails` (**não-oficial**, sem key) | `appids`, `filters=genres` | gêneros (REQ-050) |
 
 ⚠️ O parâmetro do endpoint de raridade é `gameid`, não `appid` — é o único assim.
+⚠️ O endpoint de gênero é da **loja**, não da Web API: base URL diferente, sem
+chave, sem contrato, e rate-limita agressivo.
 
-### Modelo de domínio (pydantic, ilustrativo)
+### Modelo de domínio (pydantic)
 
 ```python
+class PlayerSummary(BaseModel):
+    personaname: str
+    avatar_url: str | None
+
 class Game(BaseModel):
     appid: int
     name: str
@@ -197,7 +312,7 @@ class Game(BaseModel):
     percent: float | None        # preenchido só em sort=percent/ach_count
     achieved_count: int | None
     total_count: int | None
-    genres: list[str]            # preenchido só em group=genre
+    genres: list[str]            # preenchido só em group=genre (REQ-050)
 
 class Achievement(BaseModel):
     apiname: str
@@ -220,145 +335,200 @@ class GameDetail(BaseModel):
 
 ### Mapeamento de erro → HTTP
 
-Erros mapeados retornam `JSONResponse({"detail": "<mensagem pt-BR>"}, status)`;
-o SPA exibe a mensagem do campo `detail`.
+Todo erro responde `JSONResponse({"detail": "<mensagem pt-BR>"}, status)` — um
+**contrato único**, inclusive para o 422 (o `detail` array do FastAPI é
+substituído por string, porque o SPA exibe o campo direto).
 
-| Condição | Exceção | Status app |
+| Condição | Exceção | Status |
 |---|---|---|
-| Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | 404 JSON `{detail}` |
-| 429 persistente | `SteamRateLimitError` | 429 JSON `{detail}` |
-| 5xx persistente / falha de upstream | `SteamUnavailableError` | 502 JSON `{detail}` |
-| Jogo sem stats (`playerstats.success:false`) | — | 200 com `supports_achievements=False` |
+| `steamid` fora do padrão de 17 dígitos | `RequestValidationError` | **422** JSON `{detail}` |
+| Conta inexistente (`players: []`) | `SteamProfileNotFound` | **404** JSON `{detail}` |
+| Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | **404** JSON `{detail}` |
+| 429 persistente, ou token bucket estourado | `SteamRateLimitError` | **429** JSON `{detail}` |
+| 5xx persistente / falha de upstream | `SteamUnavailableError` | **502** JSON `{detail}` |
+| Jogo sem stats (`playerstats.success:false`) | — | **200** com `supports_achievements=False` |
+| Raridade ou gênero indisponível | — | **200** sem o dado (best-effort) |
 
 ## 5. Acceptance Criteria
 
-- **AC-001**: Given uma conta válida, When `GET /` sem `sort`, Then a lista é
-  ordenada por playtime decrescente e **apenas uma** chamada Steam é feita.
-- **AC-002**: Given `GET /?sort=name`, When renderiza, Then ordena por nome
-  (alfabético) sem buscar conquistas.
-- **AC-003**: Given `GET /?sort=percent`, When renderiza, Then busca conquistas
-  de todos os jogos (respeitando o `Semaphore`), exibe o % por jogo e ordena por
-  % decrescente.
-- **AC-004**: Given uma segunda chamada `GET /?sort=percent` dentro do TTL, When
-  renderiza, Then usa o cache `ach_counts:{appid}` e **não** refaz o fan-out.
-- **AC-005**: Given `GET /game/{appid}` de um jogo com conquistas, When
-  renderiza, Then mostra cada conquista como obtida/pendente, a contagem e o %.
+- **AC-001**: Given uma conta válida, When `GET /api/users/{steamid}/games` sem
+  `sort`, Then a lista vem ordenada por playtime decrescente e **apenas uma**
+  chamada Steam é feita.
+- **AC-002**: Given `?sort=name`, When responde, Then ordena por nome (alfabético)
+  sem buscar conquistas.
+- **AC-003**: Given `?sort=percent`, When responde, Then busca conquistas de todos
+  os jogos (respeitando o `Semaphore`), inclui o % por jogo e ordena por %
+  decrescente.
+- **AC-004**: Given uma segunda chamada `?sort=percent` dentro do TTL, When
+  responde, Then usa o cache `ach_counts:{steamid}:{appid}` e **não** refaz o
+  fan-out.
+- **AC-005**: Given `GET /api/users/{steamid}/games/{appid}` de um jogo com
+  conquistas, When responde, Then traz cada conquista como obtida/pendente, a
+  contagem e o %.
 - **AC-006**: Given a página de detalhe carregada, When o usuário aciona o filtro
   de status, Then a lista filtra no navegador sem nova requisição.
-- **AC-007**: Given um jogo sem sistema de conquistas, When `GET /game/{appid}`,
-  Then responde 200 com mensagem de que o jogo não tem conquistas (não quebra).
-- **AC-008**: Given perfil privado/key inválida, When qualquer rota, Then exibe
-  página de erro amigável em pt-BR (detalhe ⇒ 404).
+- **AC-007**: Given um jogo sem sistema de conquistas, When `GET
+  /api/users/{steamid}/games/{appid}`, Then responde **200** com
+  `supports_achievements=False` (não quebra).
+- **AC-008**: Given perfil privado ou key inválida, When qualquer rota, Then
+  responde **404** com mensagem amigável em pt-BR no campo `detail`.
 - **AC-009**: Given a Steam responde 429/5xx repetidamente, When o retry esgota,
-  Then o app responde 429/502 respectivamente.
-- **AC-010**: Given qualquer execução, When inspecionado o log, Then a
-  `STEAM_API_KEY` nunca aparece.
+  Then o app responde **429**/**502** respectivamente.
+- **AC-010**: Given qualquer execução, When inspecionado o log ou a resposta, Then
+  a `STEAM_API_KEY` nunca aparece.
 - **AC-011**: Given um jogo com estatísticas globais, When abre o detalhe, Then
-  cada conquista exibe o % global de jogadores e a que está abaixo de 10% aparece
-  marcada como rara.
+  cada conquista exibe o % global e a que está abaixo de 10% aparece como rara.
 - **AC-012**: Given a Steam não devolve raridade (403, lista vazia, rede ou 429),
-  When abre o detalhe, Then a página responde 200 com todas as conquistas, apenas
-  sem raridade — não quebra e não vira erro.
-- **AC-013**: Given `GET /?sort=last_played`, When renderiza, Then ordena pela
-  última vez jogado (mais recente primeiro), com os nunca jogados por último, e
-  **nenhuma** chamada Steam além do `GetOwnedGames`.
+  When abre o detalhe, Then responde **200** com todas as conquistas, apenas sem
+  raridade — não quebra e não vira erro.
+- **AC-013**: Given `?sort=last_played`, When responde, Then ordena pela última vez
+  jogado (mais recente primeiro), com os nunca jogados por último, e **nenhuma**
+  chamada Steam além do `GetOwnedGames`.
+- **AC-050**: Given `?group=genre` e a loja indisponível (429/403/rede), When
+  responde, Then a biblioteca vem **completa**, apenas com `genres` vazio — não
+  quebra.
+- **AC-051**: Given um SteamID **inexistente**, When qualquer rota, Then responde
+  **404** "Steam ID não encontrado" (e não a mensagem de perfil privado).
+- **AC-052**: Given um `steamid` com menos/mais de 17 dígitos ou com letras, When
+  qualquer rota, Then responde **422** com `{"detail": "<pt-BR>"}` e **nenhuma**
+  chamada à Steam é feita.
+- **AC-053**: Given o token bucket esgotado, When uma chamada que usa a key é
+  tentada, Then o app responde **429** — sem enviá-la à Steam.
+- **AC-054**: Given o `TTLCache` cheio (`_MAXSIZE`), When uma chave nova é
+  inserida, Then uma entrada é descartada (expirada primeiro; senão a mais antiga)
+  e o cache **não cresce** além do teto.
+- **AC-055**: Given um jogo **sem conquistas** na biblioteca, When `?sort=percent`
+  é chamado duas vezes dentro do TTL, Then a Steam é consultada **uma única vez**
+  para esse jogo (cache negativo, CON-011).
 
 ## 6. Test Automation Strategy
 
 - **Test Levels**: Unit (domínio/services), Integration (rotas via `TestClient`),
   Boundary (client HTTP).
-- **Frameworks**: `pytest`. Domínio testado por **client falso** injetado (sem
-  rede). `monkeypatch`/AsyncMock apenas no boundary HTTP real.
+- **Frameworks**: `pytest` (backend), `vitest` (frontend). O domínio é testado por
+  **client falso** injetado (sem rede); `monkeypatch`/AsyncMock apenas no boundary
+  HTTP real.
 - **Test Data**: fixtures com payloads representativos da Steam (jogo com
-  conquistas, jogo sem stats, perfil privado, 429/5xx).
-- **CI/CD**: `uv run pytest` deve passar localmente; pipeline opcional.
-- **Coverage**: priorizar 100% dos comportamentos da spec (services e rotas);
-  sem meta numérica rígida, mas todo AC deve ter teste.
+  conquistas, jogo sem stats, perfil privado, conta inexistente, 429/5xx, loja
+  throttlada).
+- **CI/CD**: GitHub Actions em `push`/`pull_request` — `uv sync` + `uv run pytest`
+  (backend) e `npm ci` + `npm run test` + `npm run build` (frontend; o build roda
+  `tsc -b`, então o CI também barra erro de tipagem). O CI **não** recebe a
+  `STEAM_API_KEY` real: os testes não tocam a rede.
+- **Coverage**: sem meta numérica rígida, mas **todo AC deve ter teste**.
 - **Performance**: validar que `sort=playtime` faz 1 request e que o fan-out
   respeita o `Semaphore` (sem rajada além do limite).
 
 ## 7. Rationale & Context
 
-- **Sem banco / tempo real**: simplicidade para uso pessoal; o `TTLCache`
-  absorve a maior parte do custo sem introduzir estado durável.
+- **Sem banco / tempo real**: simplicidade; o `TTLCache` absorve a maior parte do
+  custo sem introduzir estado durável.
 - **Index leve por padrão + fan-out sob demanda**: ordenar por % exige buscar
   conquistas de todos os jogos (N+1). Tornar isso opt-in (`sort=percent`/
-  `ach_count`) mantém o carregamento padrão instantâneo (1 request) e evita 429
-  no caso comum, pagando o custo só quando o usuário pede ordenação por progresso.
-- **Filtro client-side**: a lista completa já está no HTML do detalhe; filtrar no
-  navegador é instantâneo e não rebate na Steam.
-- **Cache de schema com TTL longo**: schema é quase imutável e caro; separá-lo de
-  `ach_counts` evita refazer a chamada cara a cada navegação.
+  `ach_count`) mantém o carregamento padrão instantâneo (1 request) e evita 429 no
+  caso comum, pagando o custo só quando o usuário pede ordenação por progresso.
+- **Filtro e busca client-side**: a lista completa já está no navegador; filtrar lá
+  é instantâneo e não rebate na Steam.
+- **Cache de dado do jogo separado do dado do jogador**: schema, raridade e gênero
+  são iguais para todo mundo ⇒ chave por `appid`, TTL longo, **compartilhado entre
+  visitantes**. Playtime e conquistas mudam ⇒ chave por `steamid`, TTL curto.
+- **A quota da chave é o recurso escasso, e o `steamid` é input público**: por isso
+  o token bucket (REQ-053) fica no **client**, não na rota — assim ele vale para
+  qualquer chamador, e nenhuma requisição forjada escapa dele. Pelo mesmo motivo o
+  cache tem teto (REQ-054) e o "não existe" é cacheado (CON-011): sem isso, um
+  visitante marretando IDs inválidos queima a quota e a memória.
+- **Best-effort para decoração**: raridade e gênero enfeitam; falha neles não pode
+  derrubar uma página que já tem tudo que importa.
 - **Camadas com dependência para o domínio**: torna `services` testável sem rede.
 
 ## 8. Dependencies & External Integrations
 
 ### External Systems
 - **EXT-001**: Steam Web API — integração HTTP REST (JSON) para biblioteca,
-  conquistas e schema.
+  conquistas, schema, raridade e perfil. Requer `STEAM_API_KEY`.
+- **EXT-002**: Storefront da Steam (`store/appdetails`) — **não-oficial**, sem
+  chave, sem SLA, rate-limita agressivo. Única fonte de gênero. Best-effort.
 
 ### Third-Party Services
-- **SVC-001**: Steam Web API — requer `STEAM_API_KEY`; sujeita a rate limiting
-  (429) e indisponibilidade (5xx); sem SLA garantido para uso pessoal.
+- **SVC-001**: Steam Web API — sujeita a rate limiting (429) e indisponibilidade
+  (5xx); sem SLA garantido. Quota da chave é finita ⇒ ver REQ-053.
 
 ### Infrastructure Dependencies
-- **INF-001**: Runtime único (`uvicorn`, 1 worker) — cache em processo exige
-  worker único para consistência.
-- **INF-002**: Docker / docker compose para empacotamento e execução.
+- **INF-001**: Runtime único (`uvicorn`, 1 worker) — o cache é em processo, então
+  múltiplos workers teriam caches independentes (não é erro, mas reduz o hit rate).
+- **INF-002**: Docker para empacotamento da API.
+- **INF-003**: Hospedagem estática do SPA (Vercel) com rewrite `/api/*` → API. Se o
+  host da API mudar, atualizar o rewrite — **não** partir para CORS por reflexo.
 
 ### Data Dependencies
-- **DAT-001**: Conta Steam alvo (`STEAM_ID`) — dados consumidos em tempo real;
-  perfil precisa estar acessível à key configurada.
+- **DAT-001**: Conta Steam alvo — informada pelo **visitante via URL**, não por
+  configuração. Dados consumidos em tempo real; o perfil precisa estar acessível à
+  key configurada.
 
 ### Technology Platform Dependencies
-- **PLT-001**: Python 3.12.
-- **PLT-002**: FastAPI + Jinja2 (SSR); httpx (async) como client HTTP;
-  pydantic-settings para config; gerenciador `uv`.
+- **PLT-001**: Python 3.12+ (backend); gerenciador `uv`.
+- **PLT-002**: FastAPI; `httpx` (async) como client HTTP; `pydantic-settings` para
+  config. **Sem template engine** — a API só devolve JSON.
+- **PLT-003**: React 19 + Vite + TypeScript + Tailwind + shadcn/ui + TanStack React
+  Query + React Router (frontend); gerenciador `npm`. Tipos gerados do OpenAPI.
 
 ### Compliance Dependencies
-- **COM-001**: Nenhuma exigência regulatória; restrição de segurança é não
-  vazar a `STEAM_API_KEY` (ver SEC-001/SEC-002).
+- **COM-001**: Nenhuma exigência regulatória. Todo dado exposto já é público na
+  Steam. A restrição de segurança é não vazar a `STEAM_API_KEY` (SEC-001..003).
 
 ## 9. Examples & Edge Cases
 
 ```text
 # Carregamento padrão (barato)
-GET /                  -> 1 request (GetOwnedGames), ordena por playtime
-  Half-Life 2 | 120h
-  Portal      |  8h
+GET /api/users/76561197960287930/games
+  -> 1 request (GetOwnedGames), ordena por playtime
+  [{ "name": "Half-Life 2", "playtime_minutes": 7200 }, ...]
 
 # Ordenação por progresso (fan-out na 1ª vez, cache depois)
-GET /?sort=percent     -> GetOwnedGames + N×GetPlayerAchievements (Semaphore)
-  Portal      |  8h | 92% (45/49)
-  Half-Life 2 | 120h | 60% (30/50)
+GET /api/users/76561197960287930/games?sort=percent
+  -> GetOwnedGames + N×GetPlayerAchievements (limitado por Semaphore)
+  [{ "name": "Portal", "percent": 91.8, "achieved_count": 45, "total_count": 49 }, ...]
 
-# Detalhe + filtro client-side
-GET /game/220          -> GetPlayerAchievements + GetSchemaForGame(l=brazilian)
-  [Todas | Obtidas | Pendentes]  (toggle JS, sem novo request)
+# Agrupado por gênero (best-effort: a loja pode throttlar)
+GET /api/users/76561197960287930/games?group=genre
+  -> GetOwnedGames + N×store/appdetails
+  jogo sem gênero -> "genres": []  -> SPA mostra "Sem categoria"
+
+# Detalhe
+GET /api/users/76561197960287930/games/220
+  -> GetPlayerAchievements + GetSchemaForGame + GetGlobalAchievementPercentages
 
 # Edge cases
-- Jogo sem conquistas: playerstats.success:false -> 200, "sem conquistas".
-- Perfil privado/key inválida (401/403): página de erro pt-BR; detalhe -> 404.
-- 429/5xx persistente: retry/backoff; esgotado -> 429/502.
-- Campo correto é `apiname` (não `api_name`); schema usa
-  availableGameStats.achievements.
-- Ícone de jogo: .../images/apps/{appid}/{img_icon_url}.jpg
+- steamid "123"                  -> 422 {"detail": "Parâmetro inválido na URL..."}
+- steamid inexistente            -> 404 "Steam ID não encontrado"
+- perfil privado                 -> 404 "Dados indisponíveis. O perfil pode estar privado."
+- jogo sem conquistas            -> 200, supports_achievements=false; cacheia (0,0)
+- jogo sem stats globais         -> 200, conquistas sem global_percent (403 engolido)
+- loja throttlada (429/403)      -> 200, genres: [] em todos os jogos
+- 429/5xx persistente            -> retry/backoff; esgotado -> 429/502
+- token bucket estourado         -> 429 sem sequer chamar a Steam
+- percent da raridade vem STRING ("49.9") -> convertido a float no client
+- campo é `apiname` (não `api_name`); schema usa availableGameStats.achievements
+- ícone do jogo: .../images/apps/{appid}/{img_icon_url}.jpg  (hash vazio -> None)
 ```
 
 ## 10. Validation Criteria
 
-- Todos os AC-001..AC-010 cobertos por testes automatizados verdes.
-- `sort=playtime`/`name` comprovadamente fazem 1 request (sem fan-out).
-- `sort=percent`/`ach_count` respeitam o `Semaphore` e usam cache na repetição.
-- Invariantes de camada (PAT-001..PAT-005) não violadas (web sem httpx; services
-  sem fastapi).
-- `STEAM_API_KEY` ausente de logs e respostas (SEC-001/SEC-002).
-- App sobe com `uv run uvicorn app.main:app --reload` e `docker compose up --build`.
+- Todos os AC-001..AC-055 cobertos por testes automatizados verdes.
+- `sort=playtime`/`name`/`last_played` comprovadamente fazem 1 request (sem
+  fan-out).
+- `sort=percent`/`ach_count` respeitam o `Semaphore` e usam cache na repetição —
+  **inclusive para jogo sem conquistas** (AC-055).
+- Invariantes de camada (PAT-001..PAT-006) não violadas (web sem `httpx`; services
+  sem `fastapi`; frontend sem Steam).
+- `STEAM_API_KEY` ausente de logs, respostas e do bundle (SEC-001..003).
+- App sobe com `uv run uvicorn app.main:app --reload` + `npm run dev`, e com
+  `docker compose up --build`.
+- CI verde no GitHub Actions (backend e frontend).
 
 ## 11. Related Specifications / Further Reading
 
 - `CLAUDE.md` (raiz do projeto) — instruções e invariantes de arquitetura.
-- `Steam_Web_API_Documentation.md` (a criar) — fonte de verdade dos endpoints.
-- Plano de arquitetura aprovado:
-  `~/.claude/plans/analise-o-arquivo-claude-md-curious-candle.md`.
+- `Steam_Web_API_Documentation.md` — fonte de verdade dos endpoints consumidos.
+- `ROADMAP.md` — o que já foi entregue e o que falta.
 - Steam Web API oficial: https://partner.steamgames.com/doc/webapi

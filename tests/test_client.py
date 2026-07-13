@@ -357,3 +357,42 @@ async def test_key_trafega_na_querystring():
 
     assert capturado["key"] == "KEY"
     assert capturado["steamid"] == "SID"
+
+
+async def test_raridade_global_sai_com_gameid_e_vira_mapa_por_apiname():
+    capturado = {}
+
+    def handler(request):
+        # A armadilha real deste endpoint: o parâmetro é `gameid`, não `appid`.
+        # Errar o nome devolve resposta vazia, não erro — daí a asserção.
+        capturado["gameid"] = request.url.params.get("gameid")
+        capturado["appid"] = request.url.params.get("appid")
+        return httpx.Response(
+            200,
+            json={
+                "achievementpercentages": {
+                    "achievements": [
+                        # A Steam manda o percentual como *string* ("49.9"), não
+                        # como número — confirmado no payload real do appid 440.
+                        {"name": "ACH_A", "percent": "42.7"},
+                        {"name": "ACH_B", "percent": 4.1},
+                        # Malformadas: entram no mapa nenhuma delas, e nenhuma
+                        # levanta — raridade é decoração, não pode dar 500.
+                        {"name": "ACH_SEM_PCT"},
+                        {"name": "ACH_LIXO", "percent": "n/a"},
+                        {"percent": "10.0"},
+                    ]
+                }
+            },
+        )
+
+    client, http = make_client(handler)
+    try:
+        percentuais = await client.get_global_achievement_percentages(10)
+    finally:
+        await http.aclose()
+
+    assert capturado["gameid"] == "10"
+    assert capturado["appid"] is None
+    # Sempre float, venha string ou número da Steam.
+    assert percentuais == {"ACH_A": 42.7, "ACH_B": 4.1}

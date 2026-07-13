@@ -74,6 +74,10 @@ export interface components {
             icon_url?: string | null;
             /** Achieved */
             achieved: boolean;
+            /** Unlocked At */
+            unlocked_at?: string | null;
+            /** Global Percent */
+            global_percent?: number | null;
         };
         /**
          * Game
@@ -90,6 +94,10 @@ export interface components {
             name: string;
             /** Playtime Minutes */
             playtime_minutes: number;
+            /** Playtime 2Weeks Minutes */
+            playtime_2weeks_minutes?: number | null;
+            /** Last Played At */
+            last_played_at?: string | null;
             /** Icon Url */
             icon_url?: string | null;
             /** Percent */

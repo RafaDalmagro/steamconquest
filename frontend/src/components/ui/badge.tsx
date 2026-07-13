@@ -10,6 +10,7 @@ const badgeVariants = cva(
       variant: {
         achieved: "bg-achieved text-achieved-foreground",
         locked: "bg-muted text-muted-foreground",
+        rare: "bg-primary text-primary-foreground",
       },
     },
     defaultVariants: {

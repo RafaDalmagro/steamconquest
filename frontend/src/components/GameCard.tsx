@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { formatarData } from "@/lib/format";
 import type { Game } from "@/api/client";
 
 // Mesma CDN pública de assets já usada pelo icon_url — não envolve a API key.
@@ -41,6 +42,14 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
               )}
             </div>
           )}
+          {game.playtime_2weeks_minutes != null && (
+            <span
+              title={`${(game.playtime_2weeks_minutes / 60).toFixed(1)} h nas últimas 2 semanas`}
+              className="absolute left-1.5 top-1.5 rounded-sm bg-primary px-1.5 py-0.5 font-display text-xs font-semibold text-primary-foreground"
+            >
+              Recente
+            </span>
+          )}
           {complete && (
             <span className="absolute right-1.5 top-1.5 rounded-sm bg-achieved px-1.5 py-0.5 font-display text-xs font-semibold text-achieved-foreground">
               ✦ 100%
@@ -60,6 +69,14 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
               </span>
             )}
           </div>
+          {game.last_played_at && (
+            <time
+              dateTime={game.last_played_at}
+              className="text-xs text-muted-foreground tabular-nums"
+            >
+              Jogado em {formatarData(game.last_played_at)}
+            </time>
+          )}
           {percent != null && (
             <Progress value={percent} segmented complete={complete} />
           )}

@@ -1,81 +1,123 @@
 # Roadmap — App de Conquistas Steam
 
-Análise do estado atual e backlog para implementação posterior. Cada item segue
-o ciclo do `CLAUDE.md`: `/update-specification` → `/tdd` → RED/GREEN/REFACTOR →
-REVIEW → SHIP.
+Controle do que já foi entregue e do que falta. Cada item aberto segue o ciclo do
+`CLAUDE.md`: `/update-specification` → `/tdd` → RED/GREEN/REFACTOR → REVIEW → SHIP.
 
 ## Estado atual
 
-O projeto está **completo em relação à spec v1.0**
-(`spec/spec-architecture-steam-achievements.md`):
+O app não é mais o server-rendered da spec v1.0: virou **API JSON (FastAPI) +
+SPA React**, com o `steamid` vindo da URL (multiusuário de leitura, sem login).
 
 - Arquitetura invariante OK: `web/` sem `httpx`, `services/` sem `fastapi`,
   `steam/` como único ponto HTTP. Wiring no `lifespan` de `main.py`.
-- 27 testes em 4 arquivos, todos verdes.
-- Cache TTL, retry com backoff, Docker (usuário não-root, worker único).
+- **80 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
+- Cache TTL com teto de entradas, retry com backoff, token bucket global na
+  saída para a Steam, `Semaphore` no fan-out, validação do Steam ID na entrada.
+- Deploy: SPA na Vercel (rewrite `/api/*`), API pelo `Dockerfile`.
+- **CI no GitHub Actions**: testes do backend e do frontend + build (`tsc -b`).
+- Docs em dia: a spec (v2.0) e o `Steam_Web_API_Documentation.md` descrevem o app
+  que existe de verdade — os dois são fonte de verdade citada pelo `CLAUDE.md`.
 
-Não há bug grave. O que segue são correções pequenas, features de custo quase
-zero e direcionamentos de processo.
+Não há bug grave conhecido.
 
-## Correções (prioridade)
+## Correções
 
-1. **Commit do baseline** — o repositório não tem nenhum commit; todo o código
-   está untracked e pode ser perdido. Passo zero. Usar `/git-commit-assistant`
-   ou `/caveman-commit`.
-2. **Ícone quebrado quando `img_icon_url` vem vazio** —
-   `app/services/achievements.py:36` monta a URL mesmo com hash `""`, gerando
-   `…/apps/{appid}/.jpg` (imagem quebrada). O template testa
-   `{% if game.icon_url %}`, mas a URL nunca é vazia. Fix: `icon_url=None`
-   quando `img_icon_url` for falsy. Teste: jogo sem ícone → `icon_url is None`.
-3. **`<h1>` vazio no detalhe quando o schema não tem `gameName`** —
-   `game_detail` usa só o schema para o nome; jogo sem schema renderiza título
-   vazio. Fix: fallback para o nome vindo de `owned_games` (já em cache) ou,
-   em último caso, `f"App {appid}"`.
-4. *(opcional, micro)* Detalhe não semeia o cache `ach_counts:{appid}` — visitar
-   um jogo e depois ordenar por % refaz a chamada. Só vale se incomodar.
+- [x] **Commit do baseline.**
+- [x] **Ícone quebrado quando `img_icon_url` vem vazio** (commit `70b5436`):
+      `icon_url=None` quando o hash é falsy, com teste.
+- [x] **Nome vazio no detalhe quando o schema não tem `gameName`**: `game_detail`
+      tem fallback triplo até `App {appid}`.
+- [x] **Codinome interno no lugar do nome do jogo** (achado pelo `/verify`): o
+      `gameName` do schema às vezes é o codinome do estúdio — o detalhe do
+      Remnant II exibia **"GFREMP2"**. A ordem do fallback foi invertida: a
+      biblioteca (nome da loja) vem primeiro, o schema só vale para deep-link.
+- [x] ~~*(micro, opcional)* **Detalhe não semeia o cache `ach_counts`**~~ —
+      **decidido: não fazer.** Semear a tupla economizaria 1 chamada em 155, e só
+      na ordem detalhe→biblioteca. A ordem inversa (a comum) o cache não resolve:
+      `game_detail` precisa da lista crua, que a tupla não reconstrói — e cachear
+      a lista crua por `steamid × appid` significaria 155 payloads gordos por
+      visitante (o client pede `l=brazilian`, então vêm `name` e `description`)
+      num `TTLCache` cujo teto conta entradas, não bytes. A tupla é decisão de
+      design, não pendência.
+- [x] **Jogo sem conquistas nunca entrava no cache** (achado ao investigar o item
+      acima): `_ach_counts` devolvia `None`, que é o próprio sinal de miss do
+      `_cached()` — então **todo** load com `?sort=percent` re-consultava a Steam
+      para **todos** os jogos sem conquistas da biblioteca, para sempre. Agora
+      devolve `(0, 0)` e o cache negativo pega, como já era em `genres` e
+      `global_pct`. O jogo segue sem % na tela (nada de 0/0).
 
-## Features de custo quase zero (sem endpoint novo)
+## Features de custo zero de quota (REQ-030 a REQ-033)
 
-1. **Data de desbloqueio das conquistas** — `GetPlayerAchievements` já retorna
-   `unlocktime` (`Steam_Web_API_Documentation.md:101`). Exibir "obtida em
-   dd/mm/aaaa" no detalhe e ordenar obtidas por data. Melhor relação
-   valor/custo do backlog.
-2. **Busca por nome na index** — filtro client-side (JS), mesmo padrão do
-   filtro de status do detalhe (REQ-007). Zero chamadas extras.
-3. **Resumo no topo da index** — nº de jogos, horas totais; em `sort=percent`,
-   contagem de jogos 100% ("perfect games"). Só agregação do que já está na
-   lista.
-4. **Badge "jogado recentemente"** — `playtime_2weeks` já vem no
-   `GetOwnedGames` (o campo só aparece se houve jogo recente; conferir no
-   payload).
+Todas entregues. Nenhuma tocou `steam/client.py`: derivam de campos que já vinham
+nos payloads existentes.
 
-## Features médias (exigem atualizar doc + spec antes)
+- [x] **Data de desbloqueio das conquistas** — `Achievement.unlocked_at` (ISO-8601)
+      vem do `unlocktime`; o detalhe mostra "Obtida em dd/mm/aaaa" e ordena obtidas
+      da mais recente para a mais antiga (pendentes por último).
+- [x] **Busca por nome na biblioteca** — filtro client-side em `Library.tsx`, estado
+      local (não vai para a URL).
+- [x] **Resumo no topo da biblioteca** — nº de jogos · horas totais · nº de jogos
+      100% (este só quando há dados de conquista, i.e. `sort=percent`/`ach_count`).
+      Reflete a lista já filtrada pela busca.
+- [x] **Badge "jogado recentemente"** — `Game.playtime_2weeks_minutes` do
+      `playtime_2weeks`.
+- [x] **`playtime_2weeks` confirmado no payload real** (`/verify` de 12/07/2026):
+      o campo simplesmente **não vem** quando não houve jogo nas últimas 2
+      semanas — nem como `0`. A ausência é o caso normal e o badge degrada
+      sozinho, como previsto. Falta ver o badge **aceso** num jogo recente.
 
-5. **Raridade global das conquistas** — endpoint
-   `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` ("só X% dos
-   jogadores têm essa"). **Não consta** no `Steam_Web_API_Documentation.md`
-   (fonte de verdade) — adicionar ao doc e à spec antes de implementar.
-6. **Ordenação por "última vez jogado"** — `rtime_last_played` do
-   `GetOwnedGames`; também precisa entrar no doc.
+## Features médias (REQ-040 a REQ-042)
 
-## Direcionamentos (processo/infra)
+Exigiram documentar campo/endpoint no `Steam_Web_API_Documentation.md` e na spec
+antes de implementar — feito.
 
-- **CI mínimo** quando o repo subir para GitHub: workflow com `uv sync` +
-  `uv run pytest`.
-- **Manter o escopo fechado**: nada de banco/histórico/multiusuário. Qualquer
-  feature de "evolução no tempo" (ex.: gráfico de progresso) exige persistência
-  e abre um novo ciclo de arquitetura — recusar por ora.
+- [x] **Raridade global das conquistas** (REQ-040/041) —
+      `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` (parâmetro
+      `gameid`, não `appid`). O detalhe mostra "4,1% dos jogadores" e um badge
+      "Rara" abaixo de 10%. Best-effort: jogo sem stats globais renderiza sem
+      raridade, nunca quebra. Cache `global_pct:{appid}` — por **jogo**, não por
+      jogador, então é compartilhado entre visitantes. É a **única** feature
+      pós-v1.0 que custa quota: +1 chamada por jogo no detalhe.
+- [x] **Ordenação por "última vez jogado"** (REQ-042) — `sort=last_played`, do
+      `rtime_last_played` do `GetOwnedGames`. Custo zero: o campo já vinha no
+      payload. Nunca jogado (`0`/ausente) vai para o fim. O card exibe a data.
+- [x] **`rtime_last_played` confirmado no payload real** (`/verify` de 12/07/2026):
+      vem nos **155 jogos** da biblioteca, com valor em 134 e `0` em 21 (nunca
+      jogados). A ordenação foi verificada ponta a ponta contra a Steam.
+- [x] **Raridade verificada contra a Steam**: 65/65 conquistas com percentual num
+      jogo real; jogo sem stats globais devolve **403** → detalhe abre sem
+      raridade, sem 500. ⚠️ A Steam manda `percent` como **string** (`"49.9"`) —
+      o client converte na fronteira (commit `2e27719`).
 
-## Sequência recomendada
+## Dívida / processo
 
-1. Commit do baseline (correção nº 1).
-2. Correções 2 e 3 (um ciclo TDD curto cada).
-3. Feature 1 (unlocktime) — nova iteração SDD via `/update-specification`.
-4. Features 2–3 conforme apetite.
+- [x] **Spec reescrita para v2.0.** As seções antigas descreviam o app
+      server-rendered (rota `GET /`, Jinja2, `STEAM_ID` via env, "exposição só em
+      localhost") — tudo morto. Além de corrigir, a v2.0 **escreve os requisitos
+      das features que já estavam entregues e nunca especificadas**: REQ-050
+      (`group=genre`), REQ-051 (`/profile` + desempate de erro), REQ-052 (steamid
+      de 17 dígitos → 422), REQ-053 (token bucket) e REQ-054 (teto do `TTLCache`).
+      Mentir por omissão era metade da dívida.
+- [x] **Doc da Steam completo**: §5 `ISteamUser/GetPlayerSummaries/v2` (com a nota
+      que faltava: `players: []` **só** ocorre com SteamID inexistente — perfil
+      privado devolve o player; é isso que separa 404 "não existe" de 404
+      "privado") e §6 `store/appdetails` (não-oficial, sem key, `data: []` é
+      **lista** e não dict, rate-limita agressivo).
+- [x] **CI no GitHub Actions** (`.github/workflows/ci.yml`): dois jobs em paralelo
+      — `uv sync` + `uv run pytest`; `npm ci` + `npm run test` + `npm run build`. O
+      build entra porque roda `tsc -b`: é o que barra erro de tipagem no CI em vez
+      de no deploy da Vercel (ver commit `bee0015`). Sem segredos: os testes não
+      tocam a rede, então o job usa `STEAM_API_KEY: dummy-ci-key` — a chave real
+      nunca vai para o CI.
+- Removido daqui: *"manter o escopo fechado"*. Não é tarefa — é regra permanente,
+  um `[ ]` que nunca viraria `[x]`, e já vive no `CLAUDE.md` ("Antes de propor
+  mudanças grandes").
 
 ## Verificação
 
-- `uv run pytest` verde após cada ciclo.
-- `/verify` no app real: index com jogo sem ícone não mostra imagem quebrada;
-  detalhe de jogo sem schema mostra nome de fallback; datas de desbloqueio
-  visíveis nas conquistas obtidas.
+- `uv run pytest` e `npm run test` verdes após cada ciclo.
+- `/verify` no app real, onde caem as incógnitas de payload acima:
+  - `?sort=last_played` ordena de verdade (⇒ `rtime_last_played` existe);
+  - badge "Recente" aparece em jogo das últimas 2 semanas (⇒ `playtime_2weeks`);
+  - detalhe de um jogo popular traz `global_percent`; um jogo obscuro **sem**
+    stats globais abre normalmente, sem raridade e **sem 500**.

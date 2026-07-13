@@ -115,6 +115,7 @@ Endpoints em uso (fonte de verdade: `Steam_Web_API_Documentation.md` do projeto)
 | `IPlayerService/GetOwnedGames/v1` | biblioteca + playtime |
 | `ISteamUserStats/GetPlayerAchievements/v1` | obtidas/pendentes + % |
 | `ISteamUserStats/GetSchemaForGame/v2` | nome/descrição/ícone das conquistas |
+| `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` | raridade global (param é `gameid`, não `appid`) |
 
 Detalhes que já mordem na prática:
 - `GetPlayerAchievements` retorna a lista completa com flag `achieved` (0/1).
@@ -138,8 +139,13 @@ o catálogo global, não a conta).
   oficial, não inventar camadas.
 - Cache só via `TTLCache`, sempre pelo helper `_cached()` do service (chaves
   `owned_games:{steamid}`, `ach_counts:{steamid}:{appid}`, `schema:{appid}`,
-  `genres:{appid}`, `player_summary:{steamid}`). É volátil e por processo;
-  **não** introduzir banco para "guardar histórico" sem aprovação explícita.
+  `genres:{appid}`, `global_pct:{appid}`, `player_summary:{steamid}`). É volátil
+  e por processo; **não** introduzir banco para "guardar histórico" sem aprovação
+  explícita.
+- `global_pct:{appid}` é chaveado pelo **jogo**, não pelo jogador: a raridade é a
+  mesma para todo mundo, então o cache é compartilhado entre visitantes. Raridade
+  é **decoração** — falha nela nunca pode derrubar o detalhe (o service engole o
+  erro e devolve `{}`).
 - O `TTLCache` tem **teto de entradas** (`_MAXSIZE`). Não remover: o `steamid`
   vem da URL (input público), então o espaço de chaves é controlado por quem
   chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.

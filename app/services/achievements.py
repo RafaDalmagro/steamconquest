@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 from app.core.cache import TTLCache
@@ -17,6 +18,13 @@ PROFILE_TTL = 300
 # absorve a rajada de quem marreta o mesmo ID inválido.
 NOT_FOUND_TTL = 60
 SCHEMA_TTL = 86_400
+# Raridade é por *jogo*, não por jogador: a chave é o appid, então o cache é
+# compartilhado por todos os visitantes. O número anda devagar — 24h basta.
+GLOBAL_PCT_TTL = 86_400
+# {} pode ser jogo sem stats globais (permanente) ou falha transitória. Não dá
+# para distinguir, então TTL curto: retenta em ~1h em vez de cachear o vazio por
+# um dia inteiro.
+GLOBAL_PCT_MISS_TTL = 3_600
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
@@ -26,6 +34,9 @@ GENRES_MISS_TTL = 3_600
 # Sentinela de cache negativo: distingue "não existe" (cacheado) de "não está no
 # cache" (None), sem precisar guardar a exceção.
 _NAO_EXISTE = object()
+
+# Piso de ordenação para "nunca jogado" (ver _sort).
+_NUNCA = datetime.min.replace(tzinfo=UTC)
 
 
 class AchievementsService:
@@ -56,6 +67,8 @@ class AchievementsService:
                 appid=g["appid"],
                 name=g["name"],
                 playtime_minutes=g["playtime_forever"],
+                playtime_2weeks_minutes=g.get("playtime_2weeks"),
+                last_played_at=_epoch(g.get("rtime_last_played")),
                 icon_url=(
                     _ICON_URL.format(appid=g["appid"], hash=g["img_icon_url"])
                     if g.get("img_icon_url")
@@ -100,19 +113,26 @@ class AchievementsService:
             # inexistente de conta privada. Pago só no caminho de erro.
             await self._assert_exists(steamid)
             raise
-        schema = await self._schema(appid)
-        name = schema.get("gameName", "")
-
         if not player:
+            # Jogo sem conquistas não paga a chamada de raridade: não haveria
+            # onde exibi-la.
+            schema = await self._schema(appid)
             return GameDetail(
                 appid=appid,
-                name=name,
+                name=self._name(schema, steamid, appid),
                 supports_achievements=False,
                 achieved_count=0,
                 total_count=0,
                 percent=0.0,
                 achievements=[],
             )
+
+        # Independentes entre si: em paralelo o cold-start do detalhe custa uma
+        # ida à Steam, não duas.
+        schema, raridade = await asyncio.gather(
+            self._schema(appid), self._global_percentages(appid)
+        )
+        name = self._name(schema, steamid, appid)
 
         meta = {a["name"]: a for a in schema.get("achievements", [])}
         achievements: list[Achievement] = []
@@ -129,6 +149,8 @@ class AchievementsService:
                     description=m.get("description"),
                     icon_url=m.get("icon") if is_achieved else m.get("icongray"),
                     achieved=is_achieved,
+                    unlocked_at=_epoch(entry.get("unlocktime")) if is_achieved else None,
+                    global_percent=raridade.get(entry["apiname"]),
                 )
             )
 
@@ -142,6 +164,30 @@ class AchievementsService:
             percent=_percent(achieved_count, total),
             achievements=achievements,
         )
+
+    def _name(self, schema: dict, steamid: str, appid: int) -> str:
+        """Nome do jogo, da fonte mais confiável para a menos.
+
+        A biblioteca vem primeiro porque traz o nome da **loja** — o que o
+        usuário reconhece. O `gameName` do schema é o nome interno do estúdio e
+        às vezes é um codinome ("GFREMP2" para Remnant II). Só vale como plano B,
+        para quem abre o detalhe sem ter passado pela biblioteca (deep-link).
+        """
+        return (
+            self._name_from_library(steamid, appid)
+            or schema.get("gameName")
+            or f"App {appid}"
+        )
+
+    def _name_from_library(self, steamid: str, appid: int) -> str:
+        """Nome do jogo pela biblioteca já cacheada — jogo sem schema não tem `gameName`.
+
+        Só lê o cache: buscar a biblioteca aqui custaria uma chamada à Steam só
+        para preencher um título. Quem chega pela biblioteca (o caminho normal)
+        já a tem em cache.
+        """
+        owned = self._cache.get(f"owned_games:{steamid}") or []
+        return next((g["name"] for g in owned if g["appid"] == appid), "")
 
     async def _assert_exists(self, steamid: str) -> None:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
@@ -177,9 +223,9 @@ class AchievementsService:
                     counts = await self._ach_counts(steamid, game.appid)
                 except SteamError:
                     return  # best-effort: um jogo que falha fica sem %, não quebra a página
-            if counts is None:
-                return
             achieved, total = counts
+            if not total:
+                return  # jogo sem conquistas segue sem %, sem 0/0 na tela
             game.achieved_count = achieved
             game.total_count = total
             game.percent = _percent(achieved, total)
@@ -204,20 +250,57 @@ class AchievementsService:
             lambda: self._client.get_app_genres(appid),
         )
 
-    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int] | None:
-        async def contar() -> tuple[int, int] | None:
+    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int]:
+        """Contagem (obtidas, total) do jogo. `(0, 0)` = jogo sem conquistas.
+
+        `(0, 0)` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
+        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e
+        cada load com sort=percent re-consultaria a Steam para *todos* esses
+        jogos. Mesmo cache negativo já usado em `genres` e `global_pct`.
+        """
+
+        async def contar() -> tuple[int, int]:
             achievements = await self._client.get_player_achievements(steamid, appid)
             if not achievements:
-                return None  # jogo sem conquistas: nada a cachear
+                return 0, 0
             achieved = sum(1 for a in achievements if a.get("achieved") == 1)
             return achieved, len(achievements)
 
         return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
 
+    async def _global_percentages(self, appid: int) -> dict[str, float]:
+        """Raridade por `apiname`. Best-effort: falha vira {}, nunca propaga.
+
+        Jogo sem stats globais devolve 403 (⇒ `SteamDataUnavailable`), e um 429
+        ou 5xx aqui não pode derrubar um detalhe que já tem tudo que importa. A
+        raridade é decoração — mesma postura do fan-out em `_fill_counts`.
+        """
+
+        async def buscar() -> dict[str, float]:
+            try:
+                return await self._client.get_global_achievement_percentages(appid)
+            except SteamError:
+                return {}
+
+        return await self._cached(
+            f"global_pct:{appid}",
+            lambda pct: GLOBAL_PCT_TTL if pct else GLOBAL_PCT_MISS_TTL,
+            buscar,
+        )
+
     async def _schema(self, appid: int) -> dict:
         return await self._cached(
             f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
         )
+
+
+def _epoch(ts: int | None) -> datetime | None:
+    """Epoch da Steam → datetime UTC. `0` significa "sem data", não 1970.
+
+    Vale para `unlocktime` (conquista antiga demais) e `rtime_last_played`
+    (nunca jogado): a Steam usa `0` como ausência nos dois.
+    """
+    return datetime.fromtimestamp(ts, UTC) if ts else None
 
 
 def _percent(achieved: int, total: int) -> float:
@@ -231,5 +314,10 @@ def _sort(games: list[Game], sort: str) -> None:
         games.sort(key=lambda g: g.percent or 0, reverse=True)
     elif sort == "ach_count":
         games.sort(key=lambda g: g.achieved_count or 0, reverse=True)
+    elif sort == "last_played":
+        # Nunca jogado (None) vai para o fim: com reverse=True, o menor valor
+        # possível é o último. `datetime.min` precisa do tzinfo — os demais são
+        # aware e comparar aware com naive levanta TypeError.
+        games.sort(key=lambda g: g.last_played_at or _NUNCA, reverse=True)
     else:  # playtime (default)
         games.sort(key=lambda g: g.playtime_minutes, reverse=True)

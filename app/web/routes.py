@@ -13,7 +13,7 @@ from app.errors import (
 
 router = APIRouter(prefix="/api")
 
-_VALID_SORTS = {"playtime", "name", "percent", "ach_count"}
+_VALID_SORTS = {"playtime", "name", "percent", "ach_count", "last_played"}
 _VALID_GROUPS = {"genre"}
 
 # SteamID64 tem 17 dígitos. Valida no path para dar 422 em lixo antes de

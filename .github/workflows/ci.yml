@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  # `push` só na main: numa PR de branch do próprio repo, `push` e `pull_request`
+  # disparariam os dois, rodando o CI duplicado a cada commit.
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      # Valor falso de propósito. `create_app()` chama `load_settings()`, que exige
+      # a chave — mas nenhum teste toca a rede (o domínio roda com client falso),
+      # então o CI não precisa, e não deve receber, a chave real.
+      STEAM_API_KEY: dummy-ci-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run test
+      # `npm run build` roda `tsc -b` antes do Vite: é o que barra erro de tipagem
+      # no CI em vez de descobri-lo no deploy da Vercel.
+      - run: npm run build

@@ -239,6 +239,120 @@ progresso do jogador.
 
 ---
 
+## 5. ISteamUser/GetPlayerSummaries/v2
+
+Perfil público do jogador: nome de exibição e avatar. Usado no cabeçalho da
+biblioteca — e, mais importante, como **desempate de erro** (ver Notas).
+
+**Método:** `GET /ISteamUser/GetPlayerSummaries/v2/`
+
+### Parâmetros
+
+| Parâmetro | Obrigatório | Valor no projeto | Descrição |
+|---|---|---|---|
+| `key` | sim | `{STEAM_API_KEY}` | chave da Web API |
+| `steamids` | sim | `{steamid}` | **plural** — aceita lista separada por vírgula; o app manda um só |
+
+### Resposta (campos usados)
+
+```json
+{
+  "response": {
+    "players": [
+      {
+        "steamid": "76561197960287930",
+        "personaname": "Rafa",
+        "avatarfull": "https://avatars.steamstatic.com/....jpg"
+      }
+    ]
+  }
+}
+```
+
+| Campo | Tipo | Uso |
+|---|---|---|
+| `response.players[].personaname` | string | nome de exibição |
+| `response.players[].avatarfull` | string (URL) | avatar (versão grande) |
+
+### Notas / edge cases
+
+- ⚠️ **`players: []` só acontece com SteamID inexistente.** Perfil **privado
+  continua devolvendo o player** — nome e avatar são públicos na Steam,
+  independentemente da privacidade do perfil.
+- É exatamente isso que torna este endpoint o **desempate de erro** do app: a
+  Steam responde "biblioteca indisponível" tanto para conta inexistente quanto
+  para perfil privado, e só o perfil separa os dois casos:
+  - `players: []` ⇒ `SteamProfileNotFound` ⇒ **404** "Steam ID não encontrado".
+  - player presente, mas biblioteca indisponível ⇒ `SteamDataUnavailable` ⇒
+    **404** "o perfil pode estar privado".
+- A chamada só é paga **no caminho de erro** — a biblioteca que carrega bem nunca
+  a dispara.
+- Conta inexistente não passa a existir: o "não" é cacheado
+  (`player_summary:{steamid}`, TTL curto) para que marretar o mesmo ID inválido
+  não queime a quota da chave.
+
+---
+
+## 6. store.steampowered.com/api/appdetails (não-oficial)
+
+Gêneros do jogo, para a biblioteca agrupada (`?group=genre`). **Único** lugar de
+onde o gênero sai: ele **não existe na Web API oficial**.
+
+> ⚠️ **Endpoint não-oficial da loja, não da Web API.** Base URL diferente
+> (`store.steampowered.com`, não `api.steampowered.com`) e **não usa a
+> `STEAM_API_KEY`** — nem a exige. Por isso é a única chamada do app que **não**
+> passa pelo `_get()` nem pelo token bucket: sem chave, não há quota a proteger.
+> Sem contrato, sem SLA, sem versionamento — pode sumir a qualquer momento.
+
+**Método:** `GET https://store.steampowered.com/api/appdetails`
+
+### Parâmetros
+
+| Parâmetro | Obrigatório | Valor no projeto | Descrição |
+|---|---|---|---|
+| `appids` | sim | `{appid}` | jogo alvo (**plural**, como o `steamids` do §5) |
+| `filters` | não | `genres` | recorta a resposta; sem isso vem o payload inteiro da loja |
+| `l` | não | `brazilian` | idioma do nome do gênero |
+
+### Resposta (sucesso)
+
+```json
+{
+  "220": {
+    "success": true,
+    "data": {
+      "genres": [
+        { "id": "1", "description": "Ação" }
+      ]
+    }
+  }
+}
+```
+
+| Campo | Tipo | Uso |
+|---|---|---|
+| `{appid}.success` | bool | `false` ⇒ sem dados |
+| `{appid}.data.genres[].description` | string | nome do gênero (é o que a UI agrupa) |
+
+### Notas / edge cases
+
+- A chave do objeto raiz é o **appid como string** (`"220"`), não como int.
+- ⚠️ **Jogo sem dados vem como `success: true` com `"data": []`** — uma **lista
+  vazia**, não um dict. Acessar `data["genres"]` aí levanta `TypeError`. O client
+  checa `isinstance(data, dict)` antes de ler.
+- ⚠️ **Rate-limita agressivo, por IP** (verificado ao vivo em 2026-07-11): um
+  único load de ~155 jogos com concorrência 5 rendeu ~112/155 gêneros; loads
+  repetidos em poucos minutos derrubaram o IP para `429` e depois `403`. Funciona
+  em uso normal (um load esporádico), mas não aguenta rajada repetida.
+- Por tudo acima é **100% best-effort**: qualquer falha (429, 5xx, rede, JSON
+  inválido, formato inesperado) devolve `[]` em vez de levantar. Jogo sem gênero
+  cai em "Sem categoria" e a biblioteca nunca quebra.
+- Cache `genres:{appid}` — por **jogo**, não por jogador: 7 dias quando encontra
+  (gênero é estático), 1h quando vem vazio (o vazio pode ser o 429, não ausência
+  real — não faz sentido cachear um throttle por uma semana).
+
+---
+
 ## Mapa de uso no app
 
 | Necessidade | Endpoint(s) |
@@ -246,5 +360,8 @@ progresso do jogador.
 | Index (biblioteca + playtime) | `GetOwnedGames` |
 | Index ordenado por % / nº conquistas | `GetOwnedGames` + `GetPlayerAchievements` (fan-out) |
 | Index ordenado por última vez jogado | `GetOwnedGames` (`rtime_last_played`, sem chamada extra) |
+| Index agrupado por gênero | `GetOwnedGames` + `store/appdetails` (fan-out, best-effort, sem key) |
+| Cabeçalho com nome e avatar do jogador | `GetPlayerSummaries` |
+| Desempate de erro (conta inexistente × perfil privado) | `GetPlayerSummaries` (só no caminho de erro) |
 | Detalhe do jogo (obtidas/pendentes/% + textos) | `GetPlayerAchievements` + `GetSchemaForGame` |
 | Detalhe com raridade global | + `GetGlobalAchievementPercentagesForApp` |

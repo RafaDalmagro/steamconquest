@@ -10,10 +10,13 @@ SPA React**, com o `steamid` vindo da URL (multiusuário de leitura, sem login).
 
 - Arquitetura invariante OK: `web/` sem `httpx`, `services/` sem `fastapi`,
   `steam/` como único ponto HTTP. Wiring no `lifespan` de `main.py`.
-- **79 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
+- **80 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
 - Cache TTL com teto de entradas, retry com backoff, token bucket global na
   saída para a Steam, `Semaphore` no fan-out, validação do Steam ID na entrada.
 - Deploy: SPA na Vercel (rewrite `/api/*`), API pelo `Dockerfile`.
+- **CI no GitHub Actions**: testes do backend e do frontend + build (`tsc -b`).
+- Docs em dia: a spec (v2.0) e o `Steam_Web_API_Documentation.md` descrevem o app
+  que existe de verdade — os dois são fonte de verdade citada pelo `CLAUDE.md`.
 
 Não há bug grave conhecido.
 
@@ -28,9 +31,20 @@ Não há bug grave conhecido.
       `gameName` do schema às vezes é o codinome do estúdio — o detalhe do
       Remnant II exibia **"GFREMP2"**. A ordem do fallback foi invertida: a
       biblioteca (nome da loja) vem primeiro, o schema só vale para deep-link.
-- [ ] *(micro, opcional)* **Detalhe não semeia o cache `ach_counts:{steamid}:{appid}`**
-      — `game_detail` chama o client direto, fora do `_cached()`. Visitar um jogo
-      e depois ordenar por % refaz a chamada. Só vale se incomodar na prática.
+- [x] ~~*(micro, opcional)* **Detalhe não semeia o cache `ach_counts`**~~ —
+      **decidido: não fazer.** Semear a tupla economizaria 1 chamada em 155, e só
+      na ordem detalhe→biblioteca. A ordem inversa (a comum) o cache não resolve:
+      `game_detail` precisa da lista crua, que a tupla não reconstrói — e cachear
+      a lista crua por `steamid × appid` significaria 155 payloads gordos por
+      visitante (o client pede `l=brazilian`, então vêm `name` e `description`)
+      num `TTLCache` cujo teto conta entradas, não bytes. A tupla é decisão de
+      design, não pendência.
+- [x] **Jogo sem conquistas nunca entrava no cache** (achado ao investigar o item
+      acima): `_ach_counts` devolvia `None`, que é o próprio sinal de miss do
+      `_cached()` — então **todo** load com `?sort=percent` re-consultava a Steam
+      para **todos** os jogos sem conquistas da biblioteca, para sempre. Agora
+      devolve `(0, 0)` e o cache negativo pega, como já era em `genres` e
+      `global_pct`. O jogo segue sem % na tela (nada de 0/0).
 
 ## Features de custo zero de quota (REQ-030 a REQ-033)
 
@@ -77,18 +91,27 @@ antes de implementar — feito.
 
 ## Dívida / processo
 
-- [ ] **A spec está estruturalmente defasada.** Recebeu REQ-030..033 e REQ-040..042
-      em atualizações pontuais, mas as seções antigas ainda descrevem o app
-      server-rendered (rota `GET /`, template Jinja) em vez da API
-      `/api/users/...` + SPA. Um rewrite v2 é um ciclo SDD próprio.
-- [ ] **O doc da Steam não cobre 2 endpoints que o client já chama**:
-      `ISteamUser/GetPlayerSummaries/v2` e o `store/appdetails` (gêneros, sem key).
-      O doc é a fonte de verdade — a lacuna é anterior às features médias.
-- [ ] **CI mínimo** quando o repo subir para GitHub: workflow com `uv sync` +
-      `uv run pytest` e `npm ci` + `npm run test`.
-- [ ] **Manter o escopo fechado**: nada de banco/histórico/multiusuário. Qualquer
-      feature de "evolução no tempo" (ex.: gráfico de progresso) exige persistência
-      e abre um novo ciclo de arquitetura — recusar por ora.
+- [x] **Spec reescrita para v2.0.** As seções antigas descreviam o app
+      server-rendered (rota `GET /`, Jinja2, `STEAM_ID` via env, "exposição só em
+      localhost") — tudo morto. Além de corrigir, a v2.0 **escreve os requisitos
+      das features que já estavam entregues e nunca especificadas**: REQ-050
+      (`group=genre`), REQ-051 (`/profile` + desempate de erro), REQ-052 (steamid
+      de 17 dígitos → 422), REQ-053 (token bucket) e REQ-054 (teto do `TTLCache`).
+      Mentir por omissão era metade da dívida.
+- [x] **Doc da Steam completo**: §5 `ISteamUser/GetPlayerSummaries/v2` (com a nota
+      que faltava: `players: []` **só** ocorre com SteamID inexistente — perfil
+      privado devolve o player; é isso que separa 404 "não existe" de 404
+      "privado") e §6 `store/appdetails` (não-oficial, sem key, `data: []` é
+      **lista** e não dict, rate-limita agressivo).
+- [x] **CI no GitHub Actions** (`.github/workflows/ci.yml`): dois jobs em paralelo
+      — `uv sync` + `uv run pytest`; `npm ci` + `npm run test` + `npm run build`. O
+      build entra porque roda `tsc -b`: é o que barra erro de tipagem no CI em vez
+      de no deploy da Vercel (ver commit `bee0015`). Sem segredos: os testes não
+      tocam a rede, então o job usa `STEAM_API_KEY: dummy-ci-key` — a chave real
+      nunca vai para o CI.
+- Removido daqui: *"manter o escopo fechado"*. Não é tarefa — é regra permanente,
+  um `[ ]` que nunca viraria `[x]`, e já vive no `CLAUDE.md` ("Antes de propor
+  mudanças grandes").
 
 ## Verificação
 

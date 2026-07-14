@@ -197,6 +197,63 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
   nunca expiram) até derrubar o processo. Ao encher, descarta primeiro uma entrada
   **expirada**; não havendo, a mais antiga.
 
+### Funcionais — identificação do perfil
+
+O usuário **não sabe** o próprio SteamID64: ele tem o **link do perfil** ou o
+**nome do perfil**. Exigir 17 dígitos é exigir que ele faça, no olho, o trabalho
+que a máquina faz — e para o link `/id/<nome>` nem no olho dá.
+
+- **REQ-060**: O campo de entrada do SPA aceita **qualquer forma de identificação
+  que o usuário tenha**. Uma função pura (`normalizeSteamId`) classifica o input
+  em três resultados, nesta ordem, **antes** de qualquer rede:
+
+  A ordem das linhas **é** o algoritmo: a primeira que casa vence. Trocá-las muda o
+  comportamento (ver a nota da 5ª linha).
+
+| # | Entrada | Resultado | Custo |
+|---|---|---|---|
+| 1 | URL `steamcommunity.com/profiles/76561197960287930` (com/sem esquema, `/` final ou sufixo) | **steamid** (extrai os 17 dígitos) | 0 chamadas |
+| 2 | `76561197960287930` (17 dígitos crus) | **steamid** | 0 chamadas |
+| 3 | URL `steamcommunity.com/id/<nome>` | **vanity** ⇒ REQ-061 | 1 chamada |
+| 4 | Só dígitos, mas **não** 17 (ex.: 16 = dígito comido no copiar/colar) | **inválido** — erro local | 0 chamadas |
+| 5 | `<nome>` solto (2–32 chars, `[A-Za-z0-9_-]`) | **vanity** ⇒ REQ-061 | 1 chamada |
+| 6 | Vazio, fora do charset, ou acima de 32 chars | **inválido** — erro local | 0 chamadas |
+
+  A linha 4 vir **antes** da 5 é **deliberado**, e é a única ordem que importa:
+  `1234` casa com o charset de vanity (linha 5), mas é o erro de digitação mais
+  provável que existe. Tratá-lo como vanity gastaria quota para devolver "perfil
+  não encontrado", quando a mensagem certa ("um SteamID64 tem 17 dígitos") sai de
+  graça. O preço: um vanity puramente numérico jamais é resolvido. Trade-off aceito.
+
+  As linhas 1 e 3 exigem o host `steamcommunity.com` — é o que a URL de um perfil
+  Steam tem. Um caminho solto (`/profiles/765…`, sem host) **não** é reconhecido:
+  ninguém copia meia URL da barra de endereços.
+- **REQ-061**: `GET /api/resolve?vanity={nome}` devolve `{"steamid": "<17 dígitos>"}`
+  via `ISteamUser/ResolveVanityURL/v1`. É o **único** caminho possível: resolver
+  exige a `STEAM_API_KEY`, e o SPA nunca fala com a Steam (CON-030).
+  - O `{nome}` é validado (2–32 chars, `[A-Za-z0-9_-]`) **antes** de virar chave de
+    cache ou chamada à Steam ⇒ fora disso, **422**. Sem essa guarda, texto livre de
+    tamanho arbitrário vira chave de dict (o `steamid` das outras rotas é contido
+    pelo funil de 17 dígitos do REQ-052; um vanity **não é**).
+  - Nome inexistente (`success: 42`, que a Steam manda com HTTP **200**) ⇒
+    `SteamVanityNotFound` ⇒ **404** com mensagem **própria**: a do REQ-052 manda
+    "conferir os 17 dígitos", e quem digitou um nome não digitou dígito nenhum.
+  - Passa pelo token bucket do REQ-053 (é chamada com a chave) e tem cache
+    positivo **e negativo** (CON-011).
+- **REQ-062**: O SPA oferece um **fallback textual** (elemento nativo recolhível,
+  fechado por padrão) ensinando a achar o **link do perfil** — não o SteamID64,
+  que o REQ-060 tornou desnecessário. Sem screenshots: print da UI da Steam
+  envelhece a cada mudança da Valve, e print desatualizado é pior que texto
+  nenhum. Inclui a única falha que o app **não consegue** consertar sozinho: o
+  perfil privado.
+
+**Explicitamente fora de escopo:** rate limit por IP no `/api/resolve` e partição
+do cache por prefixo. A superfície já existe hoje — `GET /api/users/<17 dígitos
+aleatórios>/profile` custa exatamente o mesmo (1 requisição ⇒ 1 chamada Steam ⇒ 1
+entrada de cache negativo). O vanity não cria uma classe nova de risco; abre mais
+uma porta do mesmo tamanho. Blindar uma e deixar a irmã aberta é teatro. Se doer,
+a correção é rate limit por IP **na frente de tudo**.
+
 ### Cache
 
 - **REQ-010**: Resultados são cacheados em `TTLCache` por processo, **volátil**
@@ -210,6 +267,13 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | `schema:{appid}` | 86400s | — | jogo |
 | `global_pct:{appid}` | 86400s | 3600s | jogo |
 | `genres:{appid}` | 604800s | 3600s | jogo |
+| `vanity:{nome}` | 300s | 60s (nome inexistente) | nome do perfil (REQ-061) |
+
+- **CON-010c**: `vanity:{nome}` é **case-sensitive**, embora a Steam trate o nome
+  como case-insensitive: `Rafa` e `rafa` viram duas entradas apontando para o mesmo
+  steamid. É desperdício de entrada, não bug — e o teto (`_MAXSIZE`, REQ-054) já
+  responde pelo crescimento. Normalizar o caixa de um valor que a Steam trata como
+  opaco custaria mais do que economiza.
 
 - **CON-010**: As chaves de dado **por jogador** incluem obrigatoriamente o
   `steamid`. Omiti-lo vazaria dados entre jogadores.
@@ -235,6 +299,9 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
     isso o "não" é `[]`);
   - conta **inexistente** ⇒ cacheia o "não" (TTL curto), para que marretar o mesmo
     ID inválido não queime a quota da chave;
+  - **nome de perfil inexistente** (REQ-061) ⇒ mesmo motivo, mesmo TTL curto. Curto
+    e não longo porque um nome livre hoje **pode ser registrado amanhã** — ao
+    contrário de um appid, que é imutável;
   - gênero/raridade **vazios** ⇒ TTL curto (o vazio pode ser um 429 transitório, e
     não ausência real — não merece 24h/7d de cache).
 - **CON-012**: TTL curto para dado do jogador (muda), TTL longo para dado do jogo
@@ -296,8 +363,12 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | GET | `/api/users/{steamid}/profile` | — | JSON `PlayerSummary` |
 | GET | `/api/users/{steamid}/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`}; `include` (repetível) ∈ {`achievements`,`genres`} | JSON `list[Game]` |
 | GET | `/api/users/{steamid}/games/{appid}` | — | JSON `GameDetail` |
+| GET | `/api/resolve` | `vanity` (2–32 chars, `[A-Za-z0-9_-]`) | JSON `ResolvedProfile` (REQ-061) |
 
 - `{steamid}`: 17 dígitos (REQ-052). Fora do padrão ⇒ **422**.
+- `/api/resolve` é a **única** rota que ecoa um `steamid` no corpo — descobri-lo é
+  o serviço que ela presta. Não é vazamento: o `steamid` já vive na URL pública
+  `/u/{steamid}` do SPA. O segredo é a `STEAM_API_KEY`, e ela continua server-side.
 - `sort`/`include` ausentes ⇒ default (`playtime` / nada incluído). Valor **fora do
   vocabulário ⇒ 422** com `detail` em pt-BR: o vocabulário está no OpenAPI, então
   lixo na querystring é erro do caller, não algo a adivinhar em silêncio.
@@ -317,8 +388,13 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` | **`gameid`** | raridade global por `apiname` (REQ-040) |
 | `ISteamUser/GetPlayerSummaries/v2` | `steamids` | `personaname` + `avatarfull`; desempate de erro (REQ-051) |
 | `store/appdetails` (**não-oficial**, sem key) | `appids`, `filters=genres` | gêneros (REQ-050) |
+| `ISteamUser/ResolveVanityURL/v1` | `vanityurl` | nome do perfil → SteamID64 (REQ-061) |
 
 ⚠️ O parâmetro do endpoint de raridade é `gameid`, não `appid` — é o único assim.
+⚠️ O `ResolveVanityURL` sinaliza fracasso com HTTP **200** + `success: 42` no corpo
+— quem olhar o status code vai achar que deu certo.
+⚠️ O endpoint de gênero é da **loja**, não da Web API: base URL diferente, sem
+chave, sem contrato, e rate-limita agressivo.
 
 ### Modelo de domínio (pydantic)
 
@@ -326,6 +402,10 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 class PlayerSummary(BaseModel):
     personaname: str
     avatar_url: str | None
+    # Sem steamid, de propósito: quem chama /profile já o tem no path.
+
+class ResolvedProfile(BaseModel):
+    steamid: str                 # o único modelo que ecoa steamid (REQ-061)
 
 class Game(BaseModel):
     appid: int
@@ -369,6 +449,8 @@ substituído por string, porque o SPA exibe o campo direto).
 | `steamid` fora do padrão de 17 dígitos | `RequestValidationError` | **422** JSON `{detail}` |
 | `sort` ou `include` fora do vocabulário | `RequestValidationError` | **422** JSON `{detail}` |
 | Conta inexistente (`players: []`) | `SteamProfileNotFound` | **404** JSON `{detail}` |
+| Nome de perfil inexistente (`success: 42`) | `SteamVanityNotFound` | **404** JSON `{detail}` — mensagem **própria**, fala em link/nome, não em "17 dígitos" |
+| `vanity` fora do formato (2–32, `[A-Za-z0-9_-]`) | `RequestValidationError` | **422** JSON `{detail}` |
 | Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | **404** JSON `{detail}` |
 | 429 persistente, ou token bucket estourado | `SteamRateLimitError` | **429** JSON `{detail}` |
 | 5xx persistente / falha de upstream | `SteamUnavailableError` | **502** JSON `{detail}` |
@@ -434,6 +516,27 @@ substituído por string, porque o SPA exibe o campo direto).
 - **AC-055**: Given um jogo **sem conquistas** na biblioteca, When
   `?include=achievements` é chamado duas vezes dentro do TTL, Then a Steam é
   consultada **uma única vez** para esse jogo (cache negativo `[]`, CON-011).
+- **AC-060**: Given o usuário cola `https://steamcommunity.com/profiles/76561197960287930`
+  — com ou sem `https://`, com `/` final ou sufixo (`/games/?tab=all`) — ou os 17
+  dígitos crus, When submete, Then o SPA navega para `/u/76561197960287930`
+  **sem chamar `/api/resolve`** — a extração é local (REQ-060).
+- **AC-061**: Given o usuário informa `steamcommunity.com/id/<nome>` **ou** o `<nome>`
+  solto, When submete, Then o SPA chama `/api/resolve?vanity=<nome>` e navega para
+  `/u/{steamid}` com o ID resolvido.
+- **AC-062**: Given o usuário informa **16 dígitos**, When submete, Then o erro é
+  local ("um SteamID64 tem 17 dígitos"), **nenhuma** requisição é feita e o
+  `localStorage` **não** é gravado.
+- **AC-063**: Given um `vanity` inexistente, When `GET /api/resolve`, Then responde
+  **404** com mensagem que fala em **link/nome do perfil** (nunca "confira os 17
+  dígitos"), e uma segunda chamada com o mesmo nome dentro do TTL **não** consulta a
+  Steam (cache negativo, CON-011).
+- **AC-064**: Given um `vanity` fora do formato (vazio, 1 char, >32 chars, ou com
+  caracteres fora de `[A-Za-z0-9_-]`), When `GET /api/resolve`, Then responde **422**
+  **antes** de qualquer chamada à Steam e **sem** criar entrada de cache.
+- **AC-065**: Given a Steam responde `success: 42` com HTTP **200**, When o client
+  resolve um nome, Then levanta `SteamVanityNotFound` — o status `200` **não** é
+  tratado como sucesso.
+
 ## 6. Test Automation Strategy
 
 - **Test Levels**: Unit (domínio/services), Integration (rotas via `TestClient`),
@@ -555,7 +658,7 @@ GET /api/users/76561197960287930/games/220
 
 ## 10. Validation Criteria
 
-- Todos os AC-001..AC-055 cobertos por testes automatizados verdes.
+- Todos os AC-001..AC-065 cobertos por testes automatizados verdes.
 - Qualquer `sort` **sem `include`** comprovadamente faz 1 request (sem fan-out).
 - `include=achievements` respeita o `Semaphore` e usa cache na repetição —
   **inclusive para jogo sem conquistas** (AC-055) e **entre biblioteca e detalhe**

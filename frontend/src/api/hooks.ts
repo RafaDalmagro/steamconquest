@@ -4,6 +4,7 @@ import {
   fetchGameDetail,
   fetchGames,
   fetchPlayerSummary,
+  fetchResolvedSteamId,
   type Group,
   type Sort,
 } from "./client";
@@ -28,6 +29,15 @@ export function useGames(steamid: string, sort: Sort, group: Group = "none") {
 export const playerSummaryQuery = (steamid: string) => ({
   queryKey: ["profile", steamid],
   queryFn: () => fetchPlayerSummary(steamid),
+});
+
+// Idem: sem hook próprio porque o Home resolve o nome *no submit*, não ao
+// renderizar. Passar pelo React Query (e não chamar o fetch cru) é o que dedupe
+// o resubmit do mesmo nome — o cache do backend já protege a quota da chave, este
+// evita até a ida ao backend.
+export const resolvedSteamIdQuery = (vanity: string) => ({
+  queryKey: ["resolve", vanity],
+  queryFn: () => fetchResolvedSteamId(vanity),
 });
 
 // Query própria (não acoplada à dos jogos): se o perfil falhar, a biblioteca

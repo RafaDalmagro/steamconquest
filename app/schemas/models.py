@@ -37,10 +37,26 @@ class Game(BaseModel):
 
 
 class PlayerSummary(BaseModel):
-    """Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis."""
+    """Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis.
+
+    Sem steamid **de propósito**: quem chama `/profile` já o tem no path, e um
+    modelo que o carrega acaba o espalhando por componentes que não deviam
+    conhecê-lo. Quem *descobre* um steamid é o `ResolvedProfile`.
+    """
 
     personaname: str
     avatar_url: str | None = None
+
+
+class ResolvedProfile(BaseModel):
+    """Nome do perfil resolvido para SteamID64 (REQ-061).
+
+    O único modelo que ecoa um steamid — descobri-lo é o serviço que a rota
+    presta. Não é vazamento: o steamid já vive na URL pública `/u/{steamid}` do
+    SPA. O segredo é a STEAM_API_KEY, e ela nunca sai do backend.
+    """
+
+    steamid: str
 
 
 class Achievement(BaseModel):

@@ -8,6 +8,7 @@ from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
+    SteamVanityNotFound,
     SteamUnavailableError,
 )
 
@@ -92,6 +93,21 @@ class SteamClient:
             # continua devolvendo o player (nome e avatar são públicos).
             raise SteamProfileNotFound("perfil não encontrado")
         return players[0]
+
+    async def resolve_vanity_url(self, nome: str) -> str:
+        """Nome do perfil (custom URL) → SteamID64.
+
+        ⚠️ O fracasso vem como HTTP **200** com `success: 42` no corpo — não como
+        404. Quem confiar no status code lê um `steamid` que não está lá.
+        """
+        data = await self._get(
+            "/ISteamUser/ResolveVanityURL/v1/",
+            {"vanityurl": nome},
+        )
+        response = data.get("response", {})
+        if response.get("success") != 1:
+            raise SteamVanityNotFound("nome de perfil não encontrado")
+        return response["steamid"]
 
     async def get_player_achievements(self, steamid: str, appid: int) -> list[dict] | None:
         """Progresso do jogador: `apiname`, `achieved` (0/1) e `unlocktime`.

@@ -4,7 +4,12 @@ from datetime import UTC, datetime
 from typing import Any, Callable, NamedTuple
 
 from app.core.cache import TTLCache
-from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
+from app.errors import (
+    SteamDataUnavailable,
+    SteamError,
+    SteamProfileNotFound,
+    SteamVanityNotFound,
+)
 from app.schemas.models import (
     Achievement,
     Game,
@@ -22,6 +27,9 @@ _ICON_URL = (
 OWNED_TTL = 300
 ACH_TTL = 300
 PROFILE_TTL = 300
+# Mapeamento nome→steamid: muda com a mesma raridade de um perfil, então segue o
+# TTL do perfil — literalmente, para não divergirem por descuido.
+VANITY_TTL = PROFILE_TTL
 # TTL curto para o "não existe": erra pouco se um perfil novo aparecer, e já
 # absorve a rajada de quem marreta o mesmo ID inválido.
 NOT_FOUND_TTL = 60
@@ -116,26 +124,33 @@ class AchievementsService:
         _sort(games, sort)
         return games
 
-    async def player_summary(self, steamid: str) -> PlayerSummary:
-        key = f"player_summary:{steamid}"
-        cached = self._cache.get(key)
-        if cached is _NAO_EXISTE:
-            raise SteamProfileNotFound("perfil não encontrado")
-        if cached is not None:
-            return cached
-        try:
-            raw = await self._client.get_player_summary(steamid)
-        except SteamProfileNotFound:
-            # Conta inexistente não passa a existir: cacheia o "não" para que
-            # marretar o mesmo ID inválido não queime a quota da STEAM_API_KEY.
-            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
-            raise
-        profile = PlayerSummary(
-            personaname=raw.get("personaname", ""),
-            avatar_url=raw.get("avatarfull") or None,
+    async def resolve_vanity(self, nome: str) -> str:
+        """Nome do perfil (custom URL) → SteamID64.
+
+        TTL curto no "não" (e não longo) porque um nome livre hoje **pode ser
+        registrado amanhã** — ao contrário de um appid, que é imutável.
+        """
+        return await self._cached_ou_ausente(
+            f"vanity:{nome}",
+            VANITY_TTL,
+            lambda: self._client.resolve_vanity_url(nome),
+            SteamVanityNotFound,
         )
-        self._cache.set(key, profile, PROFILE_TTL)
-        return profile
+
+    async def player_summary(self, steamid: str) -> PlayerSummary:
+        async def buscar() -> PlayerSummary:
+            raw = await self._client.get_player_summary(steamid)
+            return PlayerSummary(
+                personaname=raw.get("personaname", ""),
+                avatar_url=raw.get("avatarfull") or None,
+            )
+
+        return await self._cached_ou_ausente(
+            f"player_summary:{steamid}",
+            PROFILE_TTL,
+            buscar,
+            SteamProfileNotFound,
+        )
 
     async def game_detail(self, steamid: str, appid: int) -> GameDetail:
         try:
@@ -223,6 +238,36 @@ class AchievementsService:
     async def _assert_exists(self, steamid: str) -> None:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
         await self.player_summary(steamid)
+
+    async def _cached_ou_ausente(
+        self,
+        key: str,
+        ttl: int,
+        fetch,
+        ausente: type[SteamError],
+    ):
+        """Como `_cached()`, mas o "não existe" também é cacheado.
+
+        Irmão do `_cached()` e não um parâmetro dele: aqui o *erro* é resposta e
+        vira valor no cache (a sentinela `_NAO_EXISTE`), o que o `_cached()` não
+        sabe fazer — para ele, erro propaga e nada é guardado.
+
+        Existe porque perfil e nome de perfil vêm de **input público**: sem cachear
+        o "não", marretar o mesmo ID/nome inexistente queima a quota da chave a
+        cada tentativa.
+        """
+        cached = self._cache.get(key)
+        if cached is _NAO_EXISTE:
+            raise ausente("não encontrado")
+        if cached is not None:
+            return cached
+        try:
+            value = await fetch()
+        except ausente:
+            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
+            raise
+        self._cache.set(key, value, ttl)
+        return value
 
     async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch):
         """Busca no cache; no miss, chama `fetch` e guarda o resultado.

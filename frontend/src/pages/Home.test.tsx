@@ -11,15 +11,25 @@ afterEach(() => {
 });
 
 describe("Home", () => {
-  it("mostra erro e não navega quando o Steam ID é inválido", async () => {
+  it("recusa o id incompleto sem gastar chamada, dizendo quantos dígitos vieram", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
     renderWithProviders(<App />);
 
     await userEvent.type(screen.getByLabelText("Steam ID"), "123");
     await userEvent.click(screen.getByRole("button", { name: "Ver biblioteca" }));
 
+    // Quem digita só dígitos está tentando um SteamID64 e comeu algum: a resposta
+    // útil sai daqui, de graça, em vez de gastar quota no /resolve para ouvir
+    // "perfil não encontrado".
     expect(
-      screen.getByText("Informe um SteamID64 válido (17 dígitos)."),
+      screen.getByText("Um SteamID64 tem 17 dígitos — você informou 3."),
     ).toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // Um id que nunca foi verificado não pode virar o "Continuar como" da
+    // próxima visita (AC-062).
+    expect(localStorage.getItem("lastSteamId")).toBeNull();
   });
 
   it("salva o id e navega para a biblioteca quando válido", async () => {
@@ -153,5 +163,99 @@ describe("Home", () => {
     renderWithProviders(<App />);
 
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("aceita o link do perfil e navega sem gastar chamada no /resolve", async () => {
+    const fetchSpy = vi.fn(async (url: string) =>
+      url.includes("/profile")
+        ? jsonResponse({ personaname: "Fulano", avatar_url: null })
+        : jsonResponse([
+            { appid: 10, name: "Portal", playtime_minutes: 60, icon_url: null },
+          ]),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderWithProviders(<App />);
+
+    await userEvent.type(
+      screen.getByLabelText("Steam ID"),
+      "https://steamcommunity.com/profiles/76561197960287930",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Ver biblioteca" }));
+
+    await waitFor(() => expect(screen.getByText("Portal")).toBeInTheDocument());
+    // Os 17 dígitos já estavam no link: resolvê-los na Steam seria pagar por um
+    // dado que a regex entregou de graça.
+    const urls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(urls.some((u) => u.includes("/resolve"))).toBe(false);
+    expect(localStorage.getItem("lastSteamId")).toBe("76561197960287930");
+  });
+
+  it("resolve o nome do perfil na API e navega com o id devolvido", async () => {
+    const fetchSpy = vi.fn(async (url: string) => {
+      if (url.includes("/resolve"))
+        return jsonResponse({ steamid: "76561197960287930" });
+      if (url.includes("/profile"))
+        return jsonResponse({ personaname: "Gabe", avatar_url: null });
+      return jsonResponse([
+        { appid: 10, name: "Portal", playtime_minutes: 60, icon_url: null },
+      ]);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderWithProviders(<App />);
+
+    await userEvent.type(screen.getByLabelText("Steam ID"), "gabelogannewell");
+    await userEvent.click(screen.getByRole("button", { name: "Ver biblioteca" }));
+
+    await waitFor(() => expect(screen.getByText("Portal")).toBeInTheDocument());
+    // O ID não estava no input: só a Steam sabia — e só o backend pode perguntar.
+    const urls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain("/resolve?vanity=gabelogannewell");
+    // O que se grava é o id resolvido, nunca o nome: /u/:steamid é a rota.
+    expect(localStorage.getItem("lastSteamId")).toBe("76561197960287930");
+  });
+
+  it("mostra o erro do backend e não grava nada quando o nome não existe", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          { detail: "Perfil não encontrado. Confira o link ou o nome do perfil." },
+          false,
+          404,
+        ),
+      ),
+    );
+
+    renderWithProviders(<App />);
+
+    await userEvent.type(screen.getByLabelText("Steam ID"), "nao-existe");
+    await userEvent.click(screen.getByRole("button", { name: "Ver biblioteca" }));
+
+    expect(
+      await screen.findByText(
+        "Perfil não encontrado. Confira o link ou o nome do perfil.",
+      ),
+    ).toBeInTheDocument();
+    expect(localStorage.getItem("lastSteamId")).toBeNull();
+  });
+
+  it("ensina a achar o link do perfil, sem roubar a tela de quem já sabe o id", async () => {
+    renderWithProviders(<App />);
+
+    const ajuda = screen.getByText("Não sei meu Steam ID");
+    const details = ajuda.closest("details")!;
+    // Recolhido por padrão: é fallback, não o caminho principal. (No jsdom o
+    // conteúdo segue no DOM — quem esconde é o navegador —, então o que se
+    // verifica é o estado do próprio <details>.)
+    expect(details.open).toBe(false);
+
+    await userEvent.click(ajuda);
+
+    expect(details.open).toBe(true);
+    expect(screen.getByText(/Copie o endereço/)).toBeInTheDocument();
+    // A única falha que o app não conserta sozinho — e pela qual ele leva a culpa.
+    expect(screen.getByText(/privado/i)).toBeInTheDocument();
   });
 });

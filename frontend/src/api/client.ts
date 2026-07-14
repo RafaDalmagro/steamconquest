@@ -4,6 +4,7 @@ export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
 export type PlayerSummary = components["schemas"]["PlayerSummary"];
+export type ResolvedProfile = components["schemas"]["ResolvedProfile"];
 
 // Vem do OpenAPI, não de uma união escrita à mão: sort novo no backend vira erro
 // de tipo aqui até a UI tratá-lo. `npm run generate:api` é o que sincroniza.
@@ -75,6 +76,14 @@ export const fetchGames = (
 		buildApiUrl(`/users/${encodeURIComponent(steamid)}/games?${params}`),
 	);
 };
+
+// Só o backend resolve um nome de perfil: a chamada exige a STEAM_API_KEY, e o
+// SPA nunca fala com a Steam. Quando o input já traz os 17 dígitos, ninguém passa
+// por aqui — a extração é local (ver normalizeSteamId).
+export const fetchResolvedSteamId = (vanity: string) =>
+	getJSON<ResolvedProfile>(
+		buildApiUrl(`/resolve?vanity=${encodeURIComponent(vanity)}`),
+	).then((r) => r.steamid);
 
 export const fetchPlayerSummary = (steamid: string) =>
 	getJSON<PlayerSummary>(

@@ -4,13 +4,21 @@ from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.schemas.models import Game, GameDetail, Include, PlayerSummary, Sort
+from app.schemas.models import (
+    Game,
+    GameDetail,
+    Include,
+    PlayerSummary,
+    ResolvedProfile,
+    Sort,
+)
 from app.services.achievements import AchievementsService
 from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
     SteamUnavailableError,
+    SteamVanityNotFound,
 )
 
 router = APIRouter(prefix="/api")
@@ -20,8 +28,25 @@ router = APIRouter(prefix="/api")
 _STEAMID = Path(pattern=r"^\d{17}$")
 
 
+# O nome do perfil é texto livre — não passa pelo funil de 17 dígitos do steamid.
+# A Steam permite 2–32 chars alfanuméricos, `_` e `-`; validar aqui é o que impede
+# uma string arbitrária de virar chave de cache ou chamada à Steam.
+_VANITY = Query(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 def get_service(request: Request) -> AchievementsService:
     return request.app.state.service
+
+
+@router.get("/resolve", response_model=ResolvedProfile)
+async def resolve(vanity: str = _VANITY, service=Depends(get_service)):
+    """Nome do perfil (custom URL) → SteamID64.
+
+    Existe porque o usuário não sabe o próprio SteamID64: ele tem o link ou o
+    nome do perfil. Só o backend pode resolver — a chamada exige a
+    STEAM_API_KEY, e o SPA nunca fala com a Steam.
+    """
+    return ResolvedProfile(steamid=await service.resolve_vanity(vanity))
 
 
 @router.get("/users/{steamid}/profile", response_model=PlayerSummary)
@@ -51,6 +76,9 @@ async def game_detail(appid: int, steamid: str = _STEAMID, service=Depends(get_s
 # Mapeamento de erro tipado → HTTP + mensagem amigável (pt-BR), em JSON.
 _ERROR_MAP = {
     SteamProfileNotFound: (404, "Steam ID não encontrado. Confira os 17 dígitos."),
+    # Mensagem própria, e não a de cima: quem chegou por aqui digitou um *nome*.
+    # Mandá-lo conferir "os 17 dígitos" é apontar para algo que ele não escreveu.
+    SteamVanityNotFound: (404, "Perfil não encontrado. Confira o link ou o nome do perfil."),
     SteamDataUnavailable: (404, "Dados indisponíveis. O perfil pode estar privado."),
     SteamRateLimitError: (429, "A Steam limitou as requisições. Tente novamente em instantes."),
     SteamUnavailableError: (502, "A Steam está indisponível no momento."),

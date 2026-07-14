@@ -8,6 +8,7 @@ from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamUnavailableError,
+    SteamVanityNotFound,
 )
 from app.services.achievements import AchievementsService
 
@@ -29,8 +30,11 @@ class FakeSteamClient:
         genres=None,
         summary=None,
         global_pct=None,
+        vanity=None,
         delay=0.0,
     ):
+        self._vanity = vanity or {}  # nome -> steamid | Exception
+        self.vanity_calls: list[str] = []
         self._owned = owned_games if owned_games is not None else []  # list | Exception
         self._ach = achievements or {}  # appid -> list[dict] | None
         self._schemas = schemas or {}  # appid -> dict
@@ -57,6 +61,13 @@ class FakeSteamClient:
         if isinstance(self._summary, Exception):
             raise self._summary
         return self._summary
+
+    async def resolve_vanity_url(self, nome):
+        self.vanity_calls.append(nome)
+        val = self._vanity.get(nome)
+        if val is None:
+            raise SteamVanityNotFound("nome de perfil não encontrado")
+        return val
 
     async def get_player_achievements(self, steamid, appid):
         self.ach_calls.append(appid)
@@ -784,3 +795,28 @@ async def test_detalhe_prefere_o_nome_da_biblioteca_ao_codinome_do_schema():
     detail = await service.game_detail(STEAMID, 10)
 
     assert detail.name == "Remnant II"
+
+
+async def test_vanity_resolvido_e_cacheado():
+    client = FakeSteamClient(vanity={"gabelogannewell": STEAMID})
+    service = AchievementsService(client, TTLCache())
+
+    primeiro = await service.resolve_vanity("gabelogannewell")
+    segundo = await service.resolve_vanity("gabelogannewell")
+
+    assert primeiro == segundo == STEAMID
+    # Uma única ida à Steam: o segundo pedido sai do cache.
+    assert client.vanity_calls == ["gabelogannewell"]
+
+
+async def test_nome_inexistente_e_cacheado_e_nao_queima_a_quota():
+    client = FakeSteamClient(vanity={})
+    service = AchievementsService(client, TTLCache())
+
+    for _ in range(3):
+        with pytest.raises(SteamVanityNotFound):
+            await service.resolve_vanity("nao-existe")
+
+    # O "não" também é resposta: marretar o mesmo nome três vezes gasta uma única
+    # chamada da chave, não três.
+    assert client.vanity_calls == ["nao-existe"]

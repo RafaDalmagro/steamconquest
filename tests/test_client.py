@@ -6,6 +6,7 @@ from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
+    SteamVanityNotFound,
     SteamUnavailableError,
 )
 
@@ -396,3 +397,39 @@ async def test_raridade_global_sai_com_gameid_e_vira_mapa_por_apiname():
     assert capturado["appid"] is None
     # Sempre float, venha string ou número da Steam.
     assert percentuais == {"ACH_A": 42.7, "ACH_B": 4.1}
+
+
+async def test_resolve_vanity_url_devolve_o_steamid():
+    capturado = {}
+
+    def handler(request):
+        capturado["vanityurl"] = request.url.params.get("vanityurl")
+        return httpx.Response(
+            200,
+            json={"response": {"steamid": "76561197960287930", "success": 1}},
+        )
+
+    client, http = make_client(handler)
+    try:
+        steamid = await client.resolve_vanity_url("gabelogannewell")
+    finally:
+        await http.aclose()
+
+    # Só o nome vai no parâmetro — a URL inteira é destrinchada antes, no SPA.
+    assert capturado["vanityurl"] == "gabelogannewell"
+    # String, não int: o steamid trafega como string em todo o app.
+    assert steamid == "76561197960287930"
+
+
+async def test_nome_de_perfil_inexistente_levanta_vanity_not_found():
+    def handler(request):
+        # ⚠️ A Steam sinaliza o fracasso com HTTP 200 + success: 42 no corpo.
+        # Quem olhar só o status code acha que deu certo.
+        return httpx.Response(200, json={"response": {"success": 42, "message": "No match"}})
+
+    client, http = make_client(handler)
+    try:
+        with pytest.raises(SteamVanityNotFound):
+            await client.resolve_vanity_url("nao-existe")
+    finally:
+        await http.aclose()

@@ -86,13 +86,21 @@ fazer perguntas.
   nome, ícone e playtime, como JSON `list[Game]`.
 - **REQ-002**: `GET /api/users/{steamid}/games` aceita o parâmetro de query `sort`
   com os valores: `playtime` (default), `name`, `percent`, `ach_count`,
-  `last_played`. Valor ausente ou inválido ⇒ trata como `playtime` (não é erro).
-- **REQ-003**: Para `sort=playtime`, `sort=name` e `sort=last_played`, a rota
-  executa **uma única** chamada (`GetOwnedGames`) e **não** busca conquistas.
-- **REQ-004**: Para `sort=percent` e `sort=ach_count`, a rota executa fan-out de
-  `GetPlayerAchievements` para todos os jogos e a resposta **inclui** o % e a
-  contagem por jogo. O fan-out é **best-effort por jogo**: um jogo que falhe fica
-  sem %, sem derrubar a lista.
+  `last_played`. O vocabulário é declarado **uma única vez**, no domínio
+  (`app/schemas/models.py`, como `Literal`), e usado tanto pela rota quanto pelo
+  service — é assim que ele chega ao OpenAPI e, dali, aos tipos do SPA
+  (`npm run generate:api`). Ausente ⇒ `playtime`. Valor **inválido ⇒ 422** (ver §4).
+- **REQ-003**: `sort` **só ordena**. Nenhum valor de `sort` dispara chamada extra à
+  Steam: sem `include`, a rota executa **uma única** chamada (`GetOwnedGames`).
+  `sort=percent`/`ach_count` sem `include=achievements` é legal — os campos vêm
+  `null` e a ordenação os trata como `0`, mantendo a lista estável.
+- **REQ-004**: `GET /api/users/{steamid}/games` aceita o parâmetro de query
+  `include`, **repetível**, com os valores `achievements` e `genres`. É o caller
+  que declara os dados caros que quer; a rota **não os deduz** do `sort`.
+  `include=achievements` executa fan-out de `GetPlayerAchievements` para todos os
+  jogos e a resposta **inclui** o % e a contagem por jogo. O fan-out é
+  **best-effort por jogo**: um jogo que falhe fica sem %, sem derrubar a lista.
+  Valor inválido ⇒ **422**.
 - **REQ-005**: `GET /api/users/{steamid}/games/{appid}` devolve a lista completa
   de conquistas do jogo, cada uma marcada como obtida ou pendente, com
   nome/descrição/ícone, além da contagem (obtidas/total) e do % de progresso.
@@ -120,12 +128,14 @@ vêm nas respostas atuais ou de agregação client-side.
   `0` para desbloqueios muito antigos) — a conquista continua listada.
 - **REQ-031**: A biblioteca oferece **busca por nome**, filtrando **client-side** a
   lista já carregada (mesmo princípio do REQ-007): zero chamadas ao servidor. A
-  busca é estado efêmero da UI e **não** entra na URL (ao contrário de `sort` e
-  `group`).
+  busca é estado efêmero da UI e **não** entra na URL — ao contrário de `sort` e
+  `group`, que são estado **da URL do SPA** (`/u/{steamid}?sort=…&group=genre`).
+  ⚠️ `group` é do SPA, **não** da API: quem agrupa é a Library, client-side. Para a
+  API, o SPA traduz essa intenção em `include=genres` (REQ-004/REQ-050).
 - **REQ-032**: A biblioteca exibe um **resumo agregado** do que está em tela: nº de
   jogos e horas totais. Quando os dados de conquista estiverem carregados
-  (`sort=percent` ou `sort=ach_count`), também o nº de jogos 100% concluídos. O
-  resumo reflete a lista **após** a busca do REQ-031.
+  (`include=achievements`), também o nº de jogos 100% concluídos. O resumo reflete
+  a lista **após** a busca do REQ-031.
 - **REQ-033**: O card do jogo exibe um badge de **jogado recentemente** quando o
   `GetOwnedGames` traz `playtime_2weeks`. O campo só aparece no payload quando
   houve jogo nas últimas duas semanas — a ausência é o caso normal, não erro.
@@ -156,14 +166,14 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 
 ### Funcionais — entregues na v2.0 (antes não especificados)
 
-- **REQ-050**: `GET /api/users/{steamid}/games?group=genre` preenche o campo
-  `genres` de cada jogo, para que o SPA agrupe a biblioteca por gênero
-  (client-side, pelo primeiro gênero). O gênero **não existe na Web API oficial**:
-  vem do endpoint **não-oficial da loja** (`store/appdetails`), que não usa a
-  `STEAM_API_KEY`. O preenchimento é **lazy** (só quando `group=genre`) e **100%
-  best-effort**: a loja rate-limita agressivo, e qualquer falha devolve lista
-  vazia ⇒ o jogo cai em "Sem categoria" e a biblioteca **nunca quebra**. Valor de
-  `group` ausente ou inválido ⇒ sem agrupamento.
+- **REQ-050**: `GET /api/users/{steamid}/games?include=genres` preenche o campo
+  `genres` de cada jogo. **Quem agrupa é o SPA** (client-side, pelo primeiro
+  gênero) — a API apenas *inclui* o dado, e o nome do parâmetro diz isso. O gênero
+  **não existe na Web API oficial**: vem do endpoint **não-oficial da loja**
+  (`store/appdetails`), que não usa a `STEAM_API_KEY`. O preenchimento é **lazy**
+  (só quando pedido) e **100% best-effort**: a loja rate-limita agressivo, e
+  qualquer falha devolve lista vazia ⇒ o jogo cai em "Sem categoria" e a
+  biblioteca **nunca quebra**. `include` ausente ⇒ `genres` vem `[]`.
 - **REQ-051**: `GET /api/users/{steamid}/profile` devolve o nome de exibição
   (`personaname`) e o avatar (`avatarfull`) do jogador, via
   `ISteamUser/GetPlayerSummaries/v2`. Este endpoint é também o **desempate de
@@ -187,6 +197,63 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
   nunca expiram) até derrubar o processo. Ao encher, descarta primeiro uma entrada
   **expirada**; não havendo, a mais antiga.
 
+### Funcionais — identificação do perfil
+
+O usuário **não sabe** o próprio SteamID64: ele tem o **link do perfil** ou o
+**nome do perfil**. Exigir 17 dígitos é exigir que ele faça, no olho, o trabalho
+que a máquina faz — e para o link `/id/<nome>` nem no olho dá.
+
+- **REQ-060**: O campo de entrada do SPA aceita **qualquer forma de identificação
+  que o usuário tenha**. Uma função pura (`normalizeSteamId`) classifica o input
+  em três resultados, nesta ordem, **antes** de qualquer rede:
+
+  A ordem das linhas **é** o algoritmo: a primeira que casa vence. Trocá-las muda o
+  comportamento (ver a nota da 5ª linha).
+
+| # | Entrada | Resultado | Custo |
+|---|---|---|---|
+| 1 | URL `steamcommunity.com/profiles/76561197960287930` (com/sem esquema, `/` final ou sufixo) | **steamid** (extrai os 17 dígitos) | 0 chamadas |
+| 2 | `76561197960287930` (17 dígitos crus) | **steamid** | 0 chamadas |
+| 3 | URL `steamcommunity.com/id/<nome>` | **vanity** ⇒ REQ-061 | 1 chamada |
+| 4 | Só dígitos, mas **não** 17 (ex.: 16 = dígito comido no copiar/colar) | **inválido** — erro local | 0 chamadas |
+| 5 | `<nome>` solto (2–32 chars, `[A-Za-z0-9_-]`) | **vanity** ⇒ REQ-061 | 1 chamada |
+| 6 | Vazio, fora do charset, ou acima de 32 chars | **inválido** — erro local | 0 chamadas |
+
+  A linha 4 vir **antes** da 5 é **deliberado**, e é a única ordem que importa:
+  `1234` casa com o charset de vanity (linha 5), mas é o erro de digitação mais
+  provável que existe. Tratá-lo como vanity gastaria quota para devolver "perfil
+  não encontrado", quando a mensagem certa ("um SteamID64 tem 17 dígitos") sai de
+  graça. O preço: um vanity puramente numérico jamais é resolvido. Trade-off aceito.
+
+  As linhas 1 e 3 exigem o host `steamcommunity.com` — é o que a URL de um perfil
+  Steam tem. Um caminho solto (`/profiles/765…`, sem host) **não** é reconhecido:
+  ninguém copia meia URL da barra de endereços.
+- **REQ-061**: `GET /api/resolve?vanity={nome}` devolve `{"steamid": "<17 dígitos>"}`
+  via `ISteamUser/ResolveVanityURL/v1`. É o **único** caminho possível: resolver
+  exige a `STEAM_API_KEY`, e o SPA nunca fala com a Steam (CON-030).
+  - O `{nome}` é validado (2–32 chars, `[A-Za-z0-9_-]`) **antes** de virar chave de
+    cache ou chamada à Steam ⇒ fora disso, **422**. Sem essa guarda, texto livre de
+    tamanho arbitrário vira chave de dict (o `steamid` das outras rotas é contido
+    pelo funil de 17 dígitos do REQ-052; um vanity **não é**).
+  - Nome inexistente (`success: 42`, que a Steam manda com HTTP **200**) ⇒
+    `SteamVanityNotFound` ⇒ **404** com mensagem **própria**: a do REQ-052 manda
+    "conferir os 17 dígitos", e quem digitou um nome não digitou dígito nenhum.
+  - Passa pelo token bucket do REQ-053 (é chamada com a chave) e tem cache
+    positivo **e negativo** (CON-011).
+- **REQ-062**: O SPA oferece um **fallback textual** (elemento nativo recolhível,
+  fechado por padrão) ensinando a achar o **link do perfil** — não o SteamID64,
+  que o REQ-060 tornou desnecessário. Sem screenshots: print da UI da Steam
+  envelhece a cada mudança da Valve, e print desatualizado é pior que texto
+  nenhum. Inclui a única falha que o app **não consegue** consertar sozinho: o
+  perfil privado.
+
+**Explicitamente fora de escopo:** rate limit por IP no `/api/resolve` e partição
+do cache por prefixo. A superfície já existe hoje — `GET /api/users/<17 dígitos
+aleatórios>/profile` custa exatamente o mesmo (1 requisição ⇒ 1 chamada Steam ⇒ 1
+entrada de cache negativo). O vanity não cria uma classe nova de risco; abre mais
+uma porta do mesmo tamanho. Blindar uma e deixar a irmã aberta é teatro. Se doer,
+a correção é rate limit por IP **na frente de tudo**.
+
 ### Cache
 
 - **REQ-010**: Resultados são cacheados em `TTLCache` por processo, **volátil**
@@ -195,21 +262,46 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | Chave | TTL (hit) | TTL (miss/vazio) | Escopo |
 |---|---|---|---|
 | `owned_games:{steamid}` | 300s | — | jogador |
-| `ach_counts:{steamid}:{appid}` | 300s | 300s | jogador × jogo |
+| `player_ach:{steamid}:{appid}` | 300s | 300s | jogador × jogo |
 | `player_summary:{steamid}` | 300s | 60s (conta inexistente) | jogador |
 | `schema:{appid}` | 86400s | — | jogo |
 | `global_pct:{appid}` | 86400s | 3600s | jogo |
 | `genres:{appid}` | 604800s | 3600s | jogo |
+| `vanity:{nome}` | 300s | 60s (nome inexistente) | nome do perfil (REQ-061) |
+
+- **CON-010c**: `vanity:{nome}` é **case-sensitive**, embora a Steam trate o nome
+  como case-insensitive: `Rafa` e `rafa` viram duas entradas apontando para o mesmo
+  steamid. É desperdício de entrada, não bug — e o teto (`_MAXSIZE`, REQ-054) já
+  responde pelo crescimento. Normalizar o caixa de um valor que a Steam trata como
+  opaco custaria mais do que economiza.
 
 - **CON-010**: As chaves de dado **por jogador** incluem obrigatoriamente o
   `steamid`. Omiti-lo vazaria dados entre jogadores.
+- **CON-010b**: `GetPlayerAchievements` é buscado por **um único** módulo do
+  service, e o que entra em `player_ach:{steamid}:{appid}` é uma **projeção enxuta**
+  de cada conquista — `apiname`, `achieved` (já normalizado para bool) e
+  `unlocktime`. **Nunca o payload cru**: guardá-lo inflaria um `TTLCache` cujo teto
+  conta entradas, não bytes (REQ-054). Por isso o `GetPlayerAchievements` é chamado
+  **sem `l=`** — o parâmetro de idioma faz a Steam incluir `name`/`description` em
+  cada conquista (payload dobra: 5076 → 2561 bytes num jogo de 43 conquistas) que o
+  app não usa, pois o texto exibido vem do `schema:{appid}`, cacheado por jogo.
+  A contagem (obtidas/total) da biblioteca e a lista do detalhe são **duas leituras
+  do mesmo cache**: quem ordena por `%` e depois abre um jogo não paga a chamada
+  duas vezes.
+  Conquista **sem `apiname`** é descartada nessa projeção: sem nome não há como
+  casar com o schema nem com a raridade, e a exceção derrubaria o fan-out inteiro
+  (que só engole `SteamError`), violando o best-effort do REQ-004.
 - **CON-011**: **Cache negativo é obrigatório onde o "não" é uma resposta**, e não
   um erro:
-  - jogo **sem conquistas** ⇒ cacheia `(0, 0)` em `ach_counts`. Devolver "nada" e
-    não cachear faria **todo** load com `sort=percent` re-consultar a Steam para
-    **todos** esses jogos, para sempre;
+  - jogo **sem conquistas** ⇒ cacheia `[]` em `player_ach`. Devolver "nada" e
+    não cachear faria **todo** load com `include=achievements` re-consultar a Steam
+    para **todos** esses jogos, para sempre (`None` é o sinal de miss do cache, por
+    isso o "não" é `[]`);
   - conta **inexistente** ⇒ cacheia o "não" (TTL curto), para que marretar o mesmo
     ID inválido não queime a quota da chave;
+  - **nome de perfil inexistente** (REQ-061) ⇒ mesmo motivo, mesmo TTL curto. Curto
+    e não longo porque um nome livre hoje **pode ser registrado amanhã** — ao
+    contrário de um appid, que é imutável;
   - gênero/raridade **vazios** ⇒ TTL curto (o vazio pode ser um 429 transitório, e
     não ausência real — não merece 24h/7d de cache).
 - **CON-012**: TTL curto para dado do jogador (muda), TTL longo para dado do jogo
@@ -269,12 +361,18 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | Método | Rota | Query | Resposta |
 |---|---|---|---|
 | GET | `/api/users/{steamid}/profile` | — | JSON `PlayerSummary` |
-| GET | `/api/users/{steamid}/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`}; `group` ∈ {`genre`} | JSON `list[Game]` |
+| GET | `/api/users/{steamid}/games` | `sort` ∈ {`playtime`,`name`,`percent`,`ach_count`,`last_played`}; `include` (repetível) ∈ {`achievements`,`genres`} | JSON `list[Game]` |
 | GET | `/api/users/{steamid}/games/{appid}` | — | JSON `GameDetail` |
+| GET | `/api/resolve` | `vanity` (2–32 chars, `[A-Za-z0-9_-]`) | JSON `ResolvedProfile` (REQ-061) |
 
 - `{steamid}`: 17 dígitos (REQ-052). Fora do padrão ⇒ **422**.
-- `sort`/`group` ausentes ou inválidos ⇒ default (`playtime` / sem agrupamento).
-  **Não** são erro.
+- `/api/resolve` é a **única** rota que ecoa um `steamid` no corpo — descobri-lo é
+  o serviço que ela presta. Não é vazamento: o `steamid` já vive na URL pública
+  `/u/{steamid}` do SPA. O segredo é a `STEAM_API_KEY`, e ela continua server-side.
+- `sort`/`include` ausentes ⇒ default (`playtime` / nada incluído). Valor **fora do
+  vocabulário ⇒ 422** com `detail` em pt-BR: o vocabulário está no OpenAPI, então
+  lixo na querystring é erro do caller, não algo a adivinhar em silêncio.
+- Os dois eixos são **ortogonais**: `sort` ordena, `include` decide o que buscar.
 - Paths não-`/api` são servidos pelo SPA (StaticFiles + fallback p/ `index.html`,
   para deep-link de rotas do React Router).
 - Busca por nome, filtro por status e agrupamento visual são **client-side** no
@@ -290,8 +388,11 @@ Requisitos que exigiram documentar campo ou endpoint antes de implementar (ver
 | `ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2` | **`gameid`** | raridade global por `apiname` (REQ-040) |
 | `ISteamUser/GetPlayerSummaries/v2` | `steamids` | `personaname` + `avatarfull`; desempate de erro (REQ-051) |
 | `store/appdetails` (**não-oficial**, sem key) | `appids`, `filters=genres` | gêneros (REQ-050) |
+| `ISteamUser/ResolveVanityURL/v1` | `vanityurl` | nome do perfil → SteamID64 (REQ-061) |
 
 ⚠️ O parâmetro do endpoint de raridade é `gameid`, não `appid` — é o único assim.
+⚠️ O `ResolveVanityURL` sinaliza fracasso com HTTP **200** + `success: 42` no corpo
+— quem olhar o status code vai achar que deu certo.
 ⚠️ O endpoint de gênero é da **loja**, não da Web API: base URL diferente, sem
 chave, sem contrato, e rate-limita agressivo.
 
@@ -301,6 +402,10 @@ chave, sem contrato, e rate-limita agressivo.
 class PlayerSummary(BaseModel):
     personaname: str
     avatar_url: str | None
+    # Sem steamid, de propósito: quem chama /profile já o tem no path.
+
+class ResolvedProfile(BaseModel):
+    steamid: str                 # o único modelo que ecoa steamid (REQ-061)
 
 class Game(BaseModel):
     appid: int
@@ -309,10 +414,10 @@ class Game(BaseModel):
     playtime_2weeks_minutes: int | None   # só quem jogou nas últimas 2 semanas (REQ-033)
     last_played_at: datetime | None       # None = nunca jogado (REQ-042)
     icon_url: str | None
-    percent: float | None        # preenchido só em sort=percent/ach_count
+    percent: float | None        # preenchido só em include=achievements
     achieved_count: int | None
     total_count: int | None
-    genres: list[str]            # preenchido só em group=genre (REQ-050)
+    genres: list[str]            # preenchido só em include=genres (REQ-050)
 
 class Achievement(BaseModel):
     apiname: str
@@ -342,7 +447,10 @@ substituído por string, porque o SPA exibe o campo direto).
 | Condição | Exceção | Status |
 |---|---|---|
 | `steamid` fora do padrão de 17 dígitos | `RequestValidationError` | **422** JSON `{detail}` |
+| `sort` ou `include` fora do vocabulário | `RequestValidationError` | **422** JSON `{detail}` |
 | Conta inexistente (`players: []`) | `SteamProfileNotFound` | **404** JSON `{detail}` |
+| Nome de perfil inexistente (`success: 42`) | `SteamVanityNotFound` | **404** JSON `{detail}` — mensagem **própria**, fala em link/nome, não em "17 dígitos" |
+| `vanity` fora do formato (2–32, `[A-Za-z0-9_-]`) | `RequestValidationError` | **422** JSON `{detail}` |
 | Perfil privado / key inválida (401/403 Steam) | `SteamDataUnavailable` | **404** JSON `{detail}` |
 | 429 persistente, ou token bucket estourado | `SteamRateLimitError` | **429** JSON `{detail}` |
 | 5xx persistente / falha de upstream | `SteamUnavailableError` | **502** JSON `{detail}` |
@@ -356,12 +464,20 @@ substituído por string, porque o SPA exibe o campo direto).
   chamada Steam é feita.
 - **AC-002**: Given `?sort=name`, When responde, Then ordena por nome (alfabético)
   sem buscar conquistas.
-- **AC-003**: Given `?sort=percent`, When responde, Then busca conquistas de todos
-  os jogos (respeitando o `Semaphore`), inclui o % por jogo e ordena por %
-  decrescente.
-- **AC-004**: Given uma segunda chamada `?sort=percent` dentro do TTL, When
-  responde, Then usa o cache `ach_counts:{steamid}:{appid}` e **não** refaz o
+- **AC-003**: Given `?sort=percent&include=achievements`, When responde, Then busca
+  conquistas de todos os jogos (respeitando o `Semaphore`), inclui o % por jogo e
+  ordena por % decrescente.
+- **AC-004**: Given uma segunda chamada `?include=achievements` dentro do TTL, When
+  responde, Then usa o cache `player_ach:{steamid}:{appid}` e **não** refaz o
   fan-out.
+- **AC-004b**: Given `?include=achievements` já executado, When o **detalhe** de um
+  desses jogos é aberto dentro do TTL, Then a Steam **não** é consultada de novo
+  para esse jogo — e vice-versa (CON-010b).
+- **AC-004c**: Given `?sort=percent` **sem** `include`, When responde, Then
+  **nenhuma** chamada de conquistas é feita e todos os jogos vêm com `percent:
+  null` (ordenação estável, sem erro).
+- **AC-004d**: Given `?sort=xpto` ou `?include=xpto`, When responde, Then **422**
+  com `{"detail": "<pt-BR>"}` e **nenhuma** chamada à Steam.
 - **AC-005**: Given `GET /api/users/{steamid}/games/{appid}` de um jogo com
   conquistas, When responde, Then traz cada conquista como obtida/pendente, a
   contagem e o %.
@@ -384,7 +500,7 @@ substituído por string, porque o SPA exibe o campo direto).
 - **AC-013**: Given `?sort=last_played`, When responde, Then ordena pela última vez
   jogado (mais recente primeiro), com os nunca jogados por último, e **nenhuma**
   chamada Steam além do `GetOwnedGames`.
-- **AC-050**: Given `?group=genre` e a loja indisponível (429/403/rede), When
+- **AC-050**: Given `?include=genres` e a loja indisponível (429/403/rede), When
   responde, Then a biblioteca vem **completa**, apenas com `genres` vazio — não
   quebra.
 - **AC-051**: Given um SteamID **inexistente**, When qualquer rota, Then responde
@@ -397,9 +513,29 @@ substituído por string, porque o SPA exibe o campo direto).
 - **AC-054**: Given o `TTLCache` cheio (`_MAXSIZE`), When uma chave nova é
   inserida, Then uma entrada é descartada (expirada primeiro; senão a mais antiga)
   e o cache **não cresce** além do teto.
-- **AC-055**: Given um jogo **sem conquistas** na biblioteca, When `?sort=percent`
-  é chamado duas vezes dentro do TTL, Then a Steam é consultada **uma única vez**
-  para esse jogo (cache negativo, CON-011).
+- **AC-055**: Given um jogo **sem conquistas** na biblioteca, When
+  `?include=achievements` é chamado duas vezes dentro do TTL, Then a Steam é
+  consultada **uma única vez** para esse jogo (cache negativo `[]`, CON-011).
+- **AC-060**: Given o usuário cola `https://steamcommunity.com/profiles/76561197960287930`
+  — com ou sem `https://`, com `/` final ou sufixo (`/games/?tab=all`) — ou os 17
+  dígitos crus, When submete, Then o SPA navega para `/u/76561197960287930`
+  **sem chamar `/api/resolve`** — a extração é local (REQ-060).
+- **AC-061**: Given o usuário informa `steamcommunity.com/id/<nome>` **ou** o `<nome>`
+  solto, When submete, Then o SPA chama `/api/resolve?vanity=<nome>` e navega para
+  `/u/{steamid}` com o ID resolvido.
+- **AC-062**: Given o usuário informa **16 dígitos**, When submete, Then o erro é
+  local ("um SteamID64 tem 17 dígitos"), **nenhuma** requisição é feita e o
+  `localStorage` **não** é gravado.
+- **AC-063**: Given um `vanity` inexistente, When `GET /api/resolve`, Then responde
+  **404** com mensagem que fala em **link/nome do perfil** (nunca "confira os 17
+  dígitos"), e uma segunda chamada com o mesmo nome dentro do TTL **não** consulta a
+  Steam (cache negativo, CON-011).
+- **AC-064**: Given um `vanity` fora do formato (vazio, 1 char, >32 chars, ou com
+  caracteres fora de `[A-Za-z0-9_-]`), When `GET /api/resolve`, Then responde **422**
+  **antes** de qualquer chamada à Steam e **sem** criar entrada de cache.
+- **AC-065**: Given a Steam responde `success: 42` com HTTP **200**, When o client
+  resolve um nome, Then levanta `SteamVanityNotFound` — o status `200` **não** é
+  tratado como sucesso.
 
 ## 6. Test Automation Strategy
 
@@ -423,10 +559,14 @@ substituído por string, porque o SPA exibe o campo direto).
 
 - **Sem banco / tempo real**: simplicidade; o `TTLCache` absorve a maior parte do
   custo sem introduzir estado durável.
-- **Index leve por padrão + fan-out sob demanda**: ordenar por % exige buscar
-  conquistas de todos os jogos (N+1). Tornar isso opt-in (`sort=percent`/
-  `ach_count`) mantém o carregamento padrão instantâneo (1 request) e evita 429 no
-  caso comum, pagando o custo só quando o usuário pede ordenação por progresso.
+- **Index leve por padrão + fan-out sob demanda**: exibir % exige buscar conquistas
+  de todos os jogos (N+1). Tornar isso opt-in (`include=achievements`) mantém o
+  carregamento padrão instantâneo (1 request) e evita 429 no caso comum, pagando o
+  custo só quando o caller o declara.
+- **`include` em vez de deduzir do `sort`**: a rota não adivinha o que o caller
+  quer. Ordenação e busca de dado são eixos ortogonais — amarrá-los faria `sort`
+  ter um efeito colateral invisível na querystring e impediria exibir o % sem
+  ordenar por ele.
 - **Filtro e busca client-side**: a lista completa já está no navegador; filtrar lá
   é instantâneo e não rebate na Steam.
 - **Cache de dado do jogo separado do dado do jogador**: schema, raridade e gênero
@@ -485,14 +625,18 @@ GET /api/users/76561197960287930/games
   [{ "name": "Half-Life 2", "playtime_minutes": 7200 }, ...]
 
 # Ordenação por progresso (fan-out na 1ª vez, cache depois)
-GET /api/users/76561197960287930/games?sort=percent
+GET /api/users/76561197960287930/games?sort=percent&include=achievements
   -> GetOwnedGames + N×GetPlayerAchievements (limitado por Semaphore)
   [{ "name": "Portal", "percent": 91.8, "achieved_count": 45, "total_count": 49 }, ...]
 
-# Agrupado por gênero (best-effort: a loja pode throttlar)
-GET /api/users/76561197960287930/games?group=genre
+# Gênero para o SPA agrupar (best-effort: a loja pode throttlar)
+GET /api/users/76561197960287930/games?include=genres
   -> GetOwnedGames + N×store/appdetails
   jogo sem gênero -> "genres": []  -> SPA mostra "Sem categoria"
+
+# Querystring fora do vocabulário
+GET /api/users/76561197960287930/games?sort=xpto
+  -> 422 {"detail": "Parâmetro inválido na URL. Confira o endereço e tente de novo."}
 
 # Detalhe
 GET /api/users/76561197960287930/games/220
@@ -502,7 +646,7 @@ GET /api/users/76561197960287930/games/220
 - steamid "123"                  -> 422 {"detail": "Parâmetro inválido na URL..."}
 - steamid inexistente            -> 404 "Steam ID não encontrado"
 - perfil privado                 -> 404 "Dados indisponíveis. O perfil pode estar privado."
-- jogo sem conquistas            -> 200, supports_achievements=false; cacheia (0,0)
+- jogo sem conquistas            -> 200, supports_achievements=false; cacheia [] (CON-011)
 - jogo sem stats globais         -> 200, conquistas sem global_percent (403 engolido)
 - loja throttlada (429/403)      -> 200, genres: [] em todos os jogos
 - 429/5xx persistente            -> retry/backoff; esgotado -> 429/502
@@ -514,11 +658,11 @@ GET /api/users/76561197960287930/games/220
 
 ## 10. Validation Criteria
 
-- Todos os AC-001..AC-055 cobertos por testes automatizados verdes.
-- `sort=playtime`/`name`/`last_played` comprovadamente fazem 1 request (sem
-  fan-out).
-- `sort=percent`/`ach_count` respeitam o `Semaphore` e usam cache na repetição —
-  **inclusive para jogo sem conquistas** (AC-055).
+- Todos os AC-001..AC-065 cobertos por testes automatizados verdes.
+- Qualquer `sort` **sem `include`** comprovadamente faz 1 request (sem fan-out).
+- `include=achievements` respeita o `Semaphore` e usa cache na repetição —
+  **inclusive para jogo sem conquistas** (AC-055) e **entre biblioteca e detalhe**
+  (AC-004b).
 - Invariantes de camada (PAT-001..PAT-006) não violadas (web sem `httpx`; services
   sem `fastapi`; frontend sem Steam).
 - `STEAM_API_KEY` ausente de logs, respostas e do bundle (SEC-001..003).

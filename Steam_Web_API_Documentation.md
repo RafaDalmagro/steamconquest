@@ -353,10 +353,80 @@ onde o gênero sai: ele **não existe na Web API oficial**.
 
 ---
 
+## 7. ISteamUser/ResolveVanityURL/v1
+
+Traduz o **nome do perfil** (a "custom URL" da Steam) para SteamID64. É o que
+permite ao app aceitar `steamcommunity.com/id/gabelogannewell` — ou só
+`gabelogannewell` — em vez de exigir os 17 dígitos.
+
+**Método:** `GET /ISteamUser/ResolveVanityURL/v1/`
+
+### Parâmetros
+
+| Parâmetro | Obrigatório | Valor no projeto | Descrição |
+|---|---|---|---|
+| `key` | sim | `{STEAM_API_KEY}` | chave da Web API |
+| `vanityurl` | sim | `{nome}` | **só o nome**, não a URL inteira — o app extrai o trecho depois de `/id/` antes de chamar |
+| `url_type` | não | *(omitido)* | `1` = perfil individual (default), `2` = grupo, `3` = grupo oficial de jogo. O app quer o default |
+
+### Resposta (sucesso)
+
+```json
+{
+  "response": {
+    "steamid": "76561197960287930",
+    "success": 1
+  }
+}
+```
+
+### Resposta (não encontrado)
+
+```json
+{
+  "response": {
+    "success": 42,
+    "message": "No match"
+  }
+}
+```
+
+| Campo | Tipo | Uso |
+|---|---|---|
+| `response.success` | int | `1` = achou; `42` = não existe |
+| `response.steamid` | string | SteamID64 — **só vem quando `success == 1`** |
+
+### Notas / edge cases
+
+- ⚠️ **O fracasso vem como HTTP `200`.** Nome inexistente **não** devolve 404: a
+  resposta é `200` com `success: 42` no corpo. Quem confiar no status code vai
+  achar que deu certo e depois estourar num `KeyError` ao ler `steamid`. O client
+  checa o `success`, não o status.
+- ⚠️ **`steamid` chega como string**, não int — e é assim que o app usa (o
+  `steamid` trafega como string em todo lugar). Não converter.
+- O nome do perfil é **case-insensitive** na Steam, mas o app **não normaliza o
+  caixa** antes de montar a chave de cache: `Rafa` e `rafa` viram duas entradas
+  distintas apontando para o mesmo steamid. É desperdício de cache, não bug —
+  não vale o risco de normalizar um input que a Steam trata como opaco.
+- **Nem todo perfil tem nome**: quem nunca configurou a custom URL só existe em
+  `/profiles/{steamid}`. Para esse usuário este endpoint nunca é chamado — a URL
+  dele já **contém** os 17 dígitos, e o frontend os extrai sem tocar na rede.
+- Nome inexistente não passa a existir tão cedo: o "não" é cacheado
+  (`vanity:{nome}`, TTL curto), pelo mesmo motivo do `GetPlayerSummaries` —
+  marretar nomes aleatórios não pode queimar a quota da chave. TTL curto, e não
+  longo, porque um nome livre hoje **pode ser registrado amanhã** (ao contrário
+  de um appid, que é imutável).
+- O nome é **texto livre do usuário**. O app valida o formato (2–32 chars,
+  `[A-Za-z0-9_-]`) **antes** de o valor virar chave de cache ou chamada à Steam:
+  sem isso, uma string de 100 KB vira chave de dict.
+
+---
+
 ## Mapa de uso no app
 
 | Necessidade | Endpoint(s) |
 |---|---|
+| Resolver nome do perfil (`/id/<nome>`) → SteamID64 | `ResolveVanityURL` (só quando o input não é um SteamID64) |
 | Index (biblioteca + playtime) | `GetOwnedGames` |
 | Index ordenado por % / nº conquistas | `GetOwnedGames` + `GetPlayerAchievements` (fan-out) |
 | Index ordenado por última vez jogado | `GetOwnedGames` (`rtime_last_played`, sem chamada extra) |

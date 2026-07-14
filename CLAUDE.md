@@ -137,11 +137,23 @@ o catálogo global, não a conta).
 
 - Type hints em tudo; async em I/O. Sem abstrações especulativas — seguir a doc
   oficial, não inventar camadas.
-- Cache só via `TTLCache`, sempre pelo helper `_cached()` do service (chaves
-  `owned_games:{steamid}`, `ach_counts:{steamid}:{appid}`, `schema:{appid}`,
-  `genres:{appid}`, `global_pct:{appid}`, `player_summary:{steamid}`). É volátil
-  e por processo; **não** introduzir banco para "guardar histórico" sem aprovação
-  explícita.
+- Cache só via `TTLCache`, sempre pelos helpers do service (chaves
+  `owned_games:{steamid}`, `player_ach:{steamid}:{appid}`, `schema:{appid}`,
+  `genres:{appid}`, `global_pct:{appid}`, `player_summary:{steamid}`,
+  `vanity:{nome}`). É volátil e por processo; **não** introduzir banco para
+  "guardar histórico" sem aprovação explícita.
+- Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga,
+  nada é guardado); `_cached_ou_ausente()` quando o **"não existe" é uma resposta**
+  e precisa virar valor no cache. O segundo vale para o que é chaveado por **input
+  público** (`player_summary:{steamid}`, `vanity:{nome}`): sem cachear o "não",
+  marretar o mesmo ID/nome inexistente queima a quota da chave a cada tentativa.
+- `player_ach:{steamid}:{appid}` é a **única** porta para `GetPlayerAchievements`:
+  a contagem da biblioteca e a lista do detalhe leem a mesma entrada. Guarda uma
+  `Progresso` (`apiname`/`achieved`/`unlocktime`) por conquista — nada além disso.
+  Por isso o `GetPlayerAchievements` **não** manda `l=`: o idioma faria a Steam
+  incluir `name`/`description` (payload dobra) que o app descartaria, pois o texto
+  exibido vem do `schema:{appid}` — chave por **jogo**, compartilhada. Não voltar a
+  guardar o payload cru: o teto do cache conta entradas, não bytes.
 - `global_pct:{appid}` é chaveado pelo **jogo**, não pelo jogador: a raridade é a
   mesma para todo mundo, então o cache é compartilhado entre visitantes. Raridade
   é **decoração** — falha nela nunca pode derrubar o detalhe (o service engole o

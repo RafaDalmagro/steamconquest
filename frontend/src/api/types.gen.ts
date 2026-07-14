@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/api/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve
+         * @description Nome do perfil (custom URL) → SteamID64.
+         *
+         *     Existe porque o usuário não sabe o próprio SteamID64: ele tem o link ou o
+         *     nome do perfil. Só o backend pode resolver — a chamada exige a
+         *     STEAM_API_KEY, e o SPA nunca fala com a Steam.
+         */
+        get: operations["resolve_api_resolve_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users/{steamid}/profile": {
         parameters: {
             query?: never;
@@ -83,9 +107,9 @@ export interface components {
          * Game
          * @description Jogo da biblioteca para exibição na index.
          *
-         *     `percent`/`achieved_count`/`total_count` só são preenchidos quando a
-         *     ordenação exige conquistas (sort=percent/ach_count). `genres` só é
-         *     preenchido quando `group=genre`.
+         *     `percent`/`achieved_count`/`total_count` só são preenchidos com
+         *     `include=achievements`; `genres`, com `include=genres`. Sem `include`, a
+         *     biblioteca custa uma única chamada à Steam e esses campos vêm vazios.
          */
         Game: {
             /** Appid */
@@ -140,12 +164,28 @@ export interface components {
         /**
          * PlayerSummary
          * @description Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis.
+         *
+         *     Sem steamid **de propósito**: quem chama `/profile` já o tem no path, e um
+         *     modelo que o carrega acaba o espalhando por componentes que não deviam
+         *     conhecê-lo. Quem *descobre* um steamid é o `ResolvedProfile`.
          */
         PlayerSummary: {
             /** Personaname */
             personaname: string;
             /** Avatar Url */
             avatar_url?: string | null;
+        };
+        /**
+         * ResolvedProfile
+         * @description Nome do perfil resolvido para SteamID64 (REQ-061).
+         *
+         *     O único modelo que ecoa um steamid — descobri-lo é o serviço que a rota
+         *     presta. Não é vazamento: o steamid já vive na URL pública `/u/{steamid}` do
+         *     SPA. O segredo é a STEAM_API_KEY, e ela nunca sai do backend.
+         */
+        ResolvedProfile: {
+            /** Steamid */
+            steamid: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -169,6 +209,37 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    resolve_api_resolve_get: {
+        parameters: {
+            query: {
+                vanity: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedProfile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     player_profile_api_users__steamid__profile_get: {
         parameters: {
             query?: never;
@@ -203,8 +274,8 @@ export interface operations {
     list_games_api_users__steamid__games_get: {
         parameters: {
             query?: {
-                sort?: string;
-                group?: string | null;
+                sort?: "playtime" | "name" | "percent" | "ach_count" | "last_played";
+                include?: ("achievements" | "genres")[];
             };
             header?: never;
             path: {

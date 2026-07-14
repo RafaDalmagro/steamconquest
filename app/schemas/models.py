@@ -1,14 +1,24 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+# Vocabulário da biblioteca. Declarado aqui (contrato de domínio) e usado tanto na
+# assinatura da rota quanto na do service — é o que faz o OpenAPI publicá-lo e o
+# SPA gerar seus tipos daqui, em vez de redeclarar a união à mão.
+#
+# Os dois eixos são ortogonais: `Sort` decide a ordem, `Include` decide o que
+# buscar. Amarrá-los faria a ordenação disparar chamadas à Steam que ninguém pediu.
+Sort = Literal["playtime", "name", "percent", "ach_count", "last_played"]
+Include = Literal["achievements", "genres"]
 
 
 class Game(BaseModel):
     """Jogo da biblioteca para exibição na index.
 
-    `percent`/`achieved_count`/`total_count` só são preenchidos quando a
-    ordenação exige conquistas (sort=percent/ach_count). `genres` só é
-    preenchido quando `group=genre`.
+    `percent`/`achieved_count`/`total_count` só são preenchidos com
+    `include=achievements`; `genres`, com `include=genres`. Sem `include`, a
+    biblioteca custa uma única chamada à Steam e esses campos vêm vazios.
     """
 
     appid: int
@@ -27,10 +37,26 @@ class Game(BaseModel):
 
 
 class PlayerSummary(BaseModel):
-    """Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis."""
+    """Identidade pública do perfil. Nunca ecoa steamid nem dados sensíveis.
+
+    Sem steamid **de propósito**: quem chama `/profile` já o tem no path, e um
+    modelo que o carrega acaba o espalhando por componentes que não deviam
+    conhecê-lo. Quem *descobre* um steamid é o `ResolvedProfile`.
+    """
 
     personaname: str
     avatar_url: str | None = None
+
+
+class ResolvedProfile(BaseModel):
+    """Nome do perfil resolvido para SteamID64 (REQ-061).
+
+    O único modelo que ecoa um steamid — descobri-lo é o serviço que a rota
+    presta. Não é vazamento: o steamid já vive na URL pública `/u/{steamid}` do
+    SPA. O segredo é a STEAM_API_KEY, e ela nunca sai do backend.
+    """
+
+    steamid: str
 
 
 class Achievement(BaseModel):

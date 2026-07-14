@@ -8,6 +8,7 @@ from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
+    SteamVanityNotFound,
     SteamUnavailableError,
 )
 
@@ -93,10 +94,34 @@ class SteamClient:
             raise SteamProfileNotFound("perfil não encontrado")
         return players[0]
 
+    async def resolve_vanity_url(self, nome: str) -> str:
+        """Nome do perfil (custom URL) → SteamID64.
+
+        ⚠️ O fracasso vem como HTTP **200** com `success: 42` no corpo — não como
+        404. Quem confiar no status code lê um `steamid` que não está lá.
+        """
+        data = await self._get(
+            "/ISteamUser/ResolveVanityURL/v1/",
+            {"vanityurl": nome},
+        )
+        response = data.get("response", {})
+        if response.get("success") != 1:
+            raise SteamVanityNotFound("nome de perfil não encontrado")
+        return response["steamid"]
+
     async def get_player_achievements(self, steamid: str, appid: int) -> list[dict] | None:
+        """Progresso do jogador: `apiname`, `achieved` (0/1) e `unlocktime`.
+
+        **Sem `l=`**, de propósito: o parâmetro de idioma faz a Steam mandar também
+        `name` e `description` em cada conquista (payload dobra: medido 5076 → 2561
+        bytes num jogo de 43 conquistas), e o app descarta os dois — o texto exibido
+        vem do `GetSchemaForGame`, que é cacheado por *jogo* e compartilhado entre
+        jogadores. Pedir idioma aqui seria pagar o dobro em cada uma das N chamadas
+        do fan-out para jogar fora.
+        """
         data = await self._get(
             "/ISteamUserStats/GetPlayerAchievements/v1/",
-            {"steamid": steamid, "appid": appid, "l": self._lang},
+            {"steamid": steamid, "appid": appid},
         )
         stats = data.get("playerstats", {})
         if not stats.get("success") or "achievements" not in stats:

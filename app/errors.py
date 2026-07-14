@@ -23,6 +23,16 @@ class SteamProfileNotFound(SteamError):
     """
 
 
+class SteamVanityNotFound(SteamError):
+    """O nome do perfil (custom URL) não existe na Steam.
+
+    Irmã de `SteamProfileNotFound`, não filha: as duas dizem "não existe", mas
+    para entradas diferentes — e a mensagem ao usuário precisa falar da entrada
+    que ele *de fato* digitou. Mandar quem escreveu um nome "conferir os 17
+    dígitos" é instruí-lo a corrigir algo que ele não digitou.
+    """
+
+
 class SteamRateLimitError(SteamError):
     """Rate limit da Steam (429) após esgotar o retry."""
 

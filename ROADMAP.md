@@ -10,7 +10,7 @@ SPA React**, com o `steamid` vindo da URL (multiusuário de leitura, sem login).
 
 - Arquitetura invariante OK: `web/` sem `httpx`, `services/` sem `fastapi`,
   `steam/` como único ponto HTTP. Wiring no `lifespan` de `main.py`.
-- **80 testes no backend** (pytest) + **41 no frontend** (Vitest), verdes.
+- **94 testes no backend** (pytest) + **52 no frontend** (Vitest), verdes.
 - Cache TTL com teto de entradas, retry com backoff, token bucket global na
   saída para a Steam, `Semaphore` no fan-out, validação do Steam ID na entrada.
 - Deploy: SPA na Vercel (rewrite `/api/*`), API pelo `Dockerfile`.
@@ -39,6 +39,16 @@ Não há bug grave conhecido.
       visitante (o client pede `l=brazilian`, então vêm `name` e `description`)
       num `TTLCache` cujo teto conta entradas, não bytes. A tupla é decisão de
       design, não pendência.
+- [x] **Decisão acima revertida** (revisão de arquitetura, jul/2026): `ach_counts`
+      virou `player_ach:{steamid}:{appid}` e passou a ser a **única** porta para o
+      `GetPlayerAchievements` — biblioteca e detalhe leem a mesma entrada. O que
+      derrubou a objeção de memória foi notar que o app **descarta** o `name` e a
+      `description` do payload do jogador (o texto exibido vem do `schema:{appid}`,
+      cacheado por jogo): a entrada guarda só `apiname`/`achieved`/`unlocktime`, e
+      o cache deixa de inflar. Sai a tupla, sai o sentinela `(0, 0)`, sai o método
+      `_ach_counts` — e o detalhe aberto após `include=achievements` não paga mais
+      uma segunda ida à Steam. Invariante travada em
+      `test_cache_de_conquistas_nao_guarda_o_payload_gordo_da_steam`.
 - [x] **Jogo sem conquistas nunca entrava no cache** (achado ao investigar o item
       acima): `_ach_counts` devolvia `None`, que é o próprio sinal de miss do
       `_cached()` — então **todo** load com `?sort=percent` re-consultava a Steam
@@ -88,6 +98,72 @@ antes de implementar — feito.
       jogo real; jogo sem stats globais devolve **403** → detalhe abre sem
       raridade, sem 500. ⚠️ A Steam manda `percent` como **string** (`"49.9"`) —
       o client converte na fronteira (commit `2e27719`).
+
+## Correções pendentes
+
+- [ ] **Um jogo quebrado custa ~4,5s em toda carga da biblioteca** (achado pelo
+      `/verify` da revisão de arquitetura, jul/2026). O `GetPlayerAchievements` do
+      **appid 1966720 (Lethal Company)** devolve 5xx de forma consistente. O client
+      retenta 4× com backoff exponencial (0,5 + 1 + 2 = **3,5s dormindo**) e só
+      então levanta; o fan-out engole o erro (best-effort, correto) — mas a
+      **latência** não é engolida: `asyncio.gather` espera o jogo quebrado. Medido
+      com o cache quente: **4,7s** de resposta, dos quais ~4,5s são esse único jogo
+      (154 dos 155 jogos vêm do cache).
+      Falha **não** é cacheada, e isso está certo: 5xx pode ser transitório. A saída
+      provável é um **cache negativo curto para a falha** (~60s), no mesmo espírito
+      do CON-011 que já vale para gênero e raridade — "falhou agora há pouco, não
+      re-pague o backoff neste load". Deixaria a carga quente em ~0,1s.
+      Pré-existente: o antigo `_ach_counts` também não cacheava falha. Precisa de
+      ciclo SDD próprio (muda CON-011 e a tabela de TTLs).
+
+## Identificação do perfil (REQ-060 a REQ-062)
+
+O usuário **não sabe** o próprio SteamID64 — ele tem o link ou o nome do perfil.
+Hoje o campo exige 17 dígitos, então colar `steamcommunity.com/id/<nome>` dá
+"Informe um SteamID64 válido": um beco sem saída disfarçado de validação OK.
+
+Nasceu como "um tutorial passo a passo para o usuário achar o ID dele" e virou
+outra coisa no grilling: **ensinar o usuário a extrair 17 dígitos de uma URL é
+pedir que ele faça no olho o que uma regex faz numa linha** — e para o link
+`/id/<nome>` nem no olho dá, porque o ID não está lá. O tutorial caiu de feature
+a fallback de três frases (REQ-062), e a feature virou "aceitar o que o usuário
+já tem na mão".
+
+- [x] **Fase 0 — docs primeiro** (como nas features médias acima):
+      `Steam_Web_API_Documentation.md` §7 (`ISteamUser/ResolveVanityURL/v1`),
+      spec (REQ-060..062, AC-060..065) e este item.
+- [x] **Ciclo 1 — `SteamClient.resolve_vanity_url()`**: devolve o steamid; ⚠️
+      `success: 42` vem com **HTTP 200** — quem olhar o status acha que deu certo
+      e estoura no `KeyError`. Levanta `SteamVanityNotFound` (novo em `errors.py`).
+      Herda retry, backoff e token bucket do `_get()`: zero código de quota.
+- [x] **Ciclo 2 — `AchievementsService.resolve_vanity()`**: cache `vanity:{nome}`,
+      positivo (300s) **e negativo** (60s, sentinela `_NAO_EXISTE`, igual ao
+      `player_summary`). TTL curto no negativo porque nome livre hoje pode ser
+      registrado amanhã.
+- [x] **Ciclo 3 — `GET /api/resolve?vanity=`**: 200 `{"steamid"}` (modelo novo —
+      o `PlayerSummary` **continua sem steamid**); 422 fora do formato (2–32,
+      `[A-Za-z0-9_-]`) **antes** de virar chave de cache; 404 com mensagem própria
+      (a atual manda "conferir os 17 dígitos" para quem digitou um nome).
+      Depois: `npm run generate:api`.
+- [x] **Ciclo 4 — `normalizeSteamId()`** (front, função pura, zero rede): as 6
+      linhas da gramática do REQ-060. `isSteamId64` **fica** — é a guarda do
+      `enabled:` dos hooks, e `/u/:steamid` é editável à mão.
+- [x] **Ciclo 5 — submit do `Home`**: URL `/profiles/…` navega sem tocar no
+      `/resolve`; vanity resolve e navega; 16 dígitos dá erro local sem rede.
+- [x] **Ciclo 6 — `<details>` de fallback** no Home: como achar o **link** do
+      perfil (não o ID), sem screenshot (print da UI da Valve envelhece), + a
+      linha do perfil privado — a única falha que o app não conserta sozinho.
+
+**Decidido não fazer** (registrado para poder ser cobrado): rate limit por IP no
+`/resolve`, partição do cache por prefixo, `@radix-ui/react-dialog` para exibir
+três frases, screenshots, steamid dentro do `PlayerSummary`, apertar a regex do
+steamid para `^7656…`. Motivo do primeiro par: `GET /api/users/<17 dígitos
+aleatórios>/profile` **já** custa o mesmo que um vanity (1 req ⇒ 1 chamada Steam
+⇒ 1 entrada de cache negativo). O vanity não cria classe nova de risco — abre
+outra porta do mesmo tamanho. Blindar uma e deixar a irmã aberta é teatro.
+
+**Custo de quota:** zero para 17 dígitos ou URL `/profiles/…`; +1 chamada só no
+primeiro vanity de cada nome, depois é cache (positivo ou negativo).
 
 ## Dívida / processo
 

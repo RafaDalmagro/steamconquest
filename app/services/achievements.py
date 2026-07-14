@@ -1,10 +1,23 @@
 import asyncio
+from collections.abc import Collection
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from app.core.cache import TTLCache
-from app.errors import SteamDataUnavailable, SteamError, SteamProfileNotFound
-from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
+from app.errors import (
+    SteamDataUnavailable,
+    SteamError,
+    SteamProfileNotFound,
+    SteamVanityNotFound,
+)
+from app.schemas.models import (
+    Achievement,
+    Game,
+    GameDetail,
+    Include,
+    PlayerSummary,
+    Sort,
+)
 
 _ICON_URL = (
     "https://media.steampowered.com/steamcommunity/public/images/apps/{appid}/{hash}.jpg"
@@ -14,6 +27,9 @@ _ICON_URL = (
 OWNED_TTL = 300
 ACH_TTL = 300
 PROFILE_TTL = 300
+# Mapeamento nome→steamid: muda com a mesma raridade de um perfil, então segue o
+# TTL do perfil — literalmente, para não divergirem por descuido.
+VANITY_TTL = PROFILE_TTL
 # TTL curto para o "não existe": erra pouco se um perfil novo aparecer, e já
 # absorve a rajada de quem marreta o mesmo ID inválido.
 NOT_FOUND_TTL = 60
@@ -39,6 +55,17 @@ _NAO_EXISTE = object()
 _NUNCA = datetime.min.replace(tzinfo=UTC)
 
 
+class Progresso(NamedTuple):
+    """Uma conquista do jogador, normalizada: `achieved` é bool, não o `0/1` da Steam.
+
+    É o que entra no cache — e pesa menos que o dict cru.
+    """
+
+    apiname: str
+    achieved: bool
+    unlocktime: int | None
+
+
 class AchievementsService:
     """Regra de negócio: monta biblioteca e detalhe a partir do client Steam.
 
@@ -52,7 +79,10 @@ class AchievementsService:
         self._concurrency = concurrency
 
     async def list_library(
-        self, steamid: str, sort: str = "playtime", group: str | None = None
+        self,
+        steamid: str,
+        sort: Sort = "playtime",
+        include: Collection[Include] = (),
     ) -> list[Game]:
         try:
             raw = await self._owned_games(steamid)
@@ -77,37 +107,54 @@ class AchievementsService:
             )
             for g in raw
         ]
-        if sort in ("percent", "ach_count"):
-            await self._fill_counts(steamid, games)
-        if group == "genre":
-            await self._fill_genres(games)
+        # O caller declara os dados caros que quer; a rota não os deduz do `sort`.
+        # Ordenar por % sem pedir conquistas é legal: os campos ficam None e o
+        # comparador os trata como 0 (a lista sai estável, não quebrada).
+        #
+        # Os dois fan-outs são independentes e batem em hosts diferentes (Web API ×
+        # loja), cada um com seu Semaphore: em paralelo, pedir os dois custa o mais
+        # lento, não a soma.
+        trabalhos = []
+        if "achievements" in include:
+            trabalhos.append(self._fill_counts(steamid, games))
+        if "genres" in include:
+            trabalhos.append(self._fill_genres(games))
+        if trabalhos:
+            await asyncio.gather(*trabalhos)
         _sort(games, sort)
         return games
 
-    async def player_summary(self, steamid: str) -> PlayerSummary:
-        key = f"player_summary:{steamid}"
-        cached = self._cache.get(key)
-        if cached is _NAO_EXISTE:
-            raise SteamProfileNotFound("perfil não encontrado")
-        if cached is not None:
-            return cached
-        try:
-            raw = await self._client.get_player_summary(steamid)
-        except SteamProfileNotFound:
-            # Conta inexistente não passa a existir: cacheia o "não" para que
-            # marretar o mesmo ID inválido não queime a quota da STEAM_API_KEY.
-            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
-            raise
-        profile = PlayerSummary(
-            personaname=raw.get("personaname", ""),
-            avatar_url=raw.get("avatarfull") or None,
+    async def resolve_vanity(self, nome: str) -> str:
+        """Nome do perfil (custom URL) → SteamID64.
+
+        TTL curto no "não" (e não longo) porque um nome livre hoje **pode ser
+        registrado amanhã** — ao contrário de um appid, que é imutável.
+        """
+        return await self._cached_ou_ausente(
+            f"vanity:{nome}",
+            VANITY_TTL,
+            lambda: self._client.resolve_vanity_url(nome),
+            SteamVanityNotFound,
         )
-        self._cache.set(key, profile, PROFILE_TTL)
-        return profile
+
+    async def player_summary(self, steamid: str) -> PlayerSummary:
+        async def buscar() -> PlayerSummary:
+            raw = await self._client.get_player_summary(steamid)
+            return PlayerSummary(
+                personaname=raw.get("personaname", ""),
+                avatar_url=raw.get("avatarfull") or None,
+            )
+
+        return await self._cached_ou_ausente(
+            f"player_summary:{steamid}",
+            PROFILE_TTL,
+            buscar,
+            SteamProfileNotFound,
+        )
 
     async def game_detail(self, steamid: str, appid: int) -> GameDetail:
         try:
-            player = await self._client.get_player_achievements(steamid, appid)
+            player = await self._player_achievements(steamid, appid)
         except SteamDataUnavailable:
             # Mesma ambiguidade da biblioteca: só o perfil desempata conta
             # inexistente de conta privada. Pago só no caminho de erro.
@@ -138,19 +185,18 @@ class AchievementsService:
         achievements: list[Achievement] = []
         achieved_count = 0
         for entry in player:
-            is_achieved = entry.get("achieved") == 1
-            if is_achieved:
+            if entry.achieved:
                 achieved_count += 1
-            m = meta.get(entry["apiname"], {})
+            m = meta.get(entry.apiname, {})
             achievements.append(
                 Achievement(
-                    apiname=entry["apiname"],
-                    display_name=m.get("displayName") or entry["apiname"],
+                    apiname=entry.apiname,
+                    display_name=m.get("displayName") or entry.apiname,
                     description=m.get("description"),
-                    icon_url=m.get("icon") if is_achieved else m.get("icongray"),
-                    achieved=is_achieved,
-                    unlocked_at=_epoch(entry.get("unlocktime")) if is_achieved else None,
-                    global_percent=raridade.get(entry["apiname"]),
+                    icon_url=m.get("icon") if entry.achieved else m.get("icongray"),
+                    achieved=entry.achieved,
+                    unlocked_at=_epoch(entry.unlocktime) if entry.achieved else None,
+                    global_percent=raridade.get(entry.apiname),
                 )
             )
 
@@ -193,6 +239,36 @@ class AchievementsService:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
         await self.player_summary(steamid)
 
+    async def _cached_ou_ausente(
+        self,
+        key: str,
+        ttl: int,
+        fetch,
+        ausente: type[SteamError],
+    ):
+        """Como `_cached()`, mas o "não existe" também é cacheado.
+
+        Irmão do `_cached()` e não um parâmetro dele: aqui o *erro* é resposta e
+        vira valor no cache (a sentinela `_NAO_EXISTE`), o que o `_cached()` não
+        sabe fazer — para ele, erro propaga e nada é guardado.
+
+        Existe porque perfil e nome de perfil vêm de **input público**: sem cachear
+        o "não", marretar o mesmo ID/nome inexistente queima a quota da chave a
+        cada tentativa.
+        """
+        cached = self._cache.get(key)
+        if cached is _NAO_EXISTE:
+            raise ausente("não encontrado")
+        if cached is not None:
+            return cached
+        try:
+            value = await fetch()
+        except ausente:
+            self._cache.set(key, _NAO_EXISTE, NOT_FOUND_TTL)
+            raise
+        self._cache.set(key, value, ttl)
+        return value
+
     async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch):
         """Busca no cache; no miss, chama `fetch` e guarda o resultado.
 
@@ -220,15 +296,14 @@ class AchievementsService:
         async def fill(game: Game) -> None:
             async with sem:
                 try:
-                    counts = await self._ach_counts(steamid, game.appid)
+                    achievements = await self._player_achievements(steamid, game.appid)
                 except SteamError:
                     return  # best-effort: um jogo que falha fica sem %, não quebra a página
-            achieved, total = counts
-            if not total:
+            if not achievements:
                 return  # jogo sem conquistas segue sem %, sem 0/0 na tela
-            game.achieved_count = achieved
-            game.total_count = total
-            game.percent = _percent(achieved, total)
+            game.achieved_count = sum(1 for a in achievements if a.achieved)
+            game.total_count = len(achievements)
+            game.percent = _percent(game.achieved_count, game.total_count)
 
         await asyncio.gather(*(fill(g) for g in games))
 
@@ -250,23 +325,35 @@ class AchievementsService:
             lambda: self._client.get_app_genres(appid),
         )
 
-    async def _ach_counts(self, steamid: str, appid: int) -> tuple[int, int]:
-        """Contagem (obtidas, total) do jogo. `(0, 0)` = jogo sem conquistas.
+    async def _player_achievements(self, steamid: str, appid: int) -> list[Progresso]:
+        """Progresso do jogador no jogo. `[]` = jogo sem conquistas.
 
-        `(0, 0)` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
-        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e
-        cada load com sort=percent re-consultaria a Steam para *todos* esses
+        Único ponto que busca `GetPlayerAchievements`: a contagem da biblioteca e a
+        lista do detalhe são duas leituras deste cache, não duas idas à Steam.
+
+        Conquista sem `apiname` é descartada: sem nome não há como casar com o
+        schema nem com a raridade, e o `KeyError` derrubaria o fan-out inteiro (que
+        só engole `SteamError`).
+
+        `[]` em vez de `None` porque `None` é o sinal de miss do `_cached()`:
+        devolvê-lo faria "este jogo não tem conquistas" nunca ser cacheado, e cada
+        load com `include=achievements` re-consultaria a Steam para *todos* esses
         jogos. Mesmo cache negativo já usado em `genres` e `global_pct`.
         """
 
-        async def contar() -> tuple[int, int]:
-            achievements = await self._client.get_player_achievements(steamid, appid)
-            if not achievements:
-                return 0, 0
-            achieved = sum(1 for a in achievements if a.get("achieved") == 1)
-            return achieved, len(achievements)
+        async def buscar() -> list[Progresso]:
+            entries = await self._client.get_player_achievements(steamid, appid) or []
+            return [
+                Progresso(
+                    apiname=e["apiname"],
+                    achieved=e.get("achieved") == 1,
+                    unlocktime=e.get("unlocktime"),
+                )
+                for e in entries
+                if e.get("apiname")
+            ]
 
-        return await self._cached(f"ach_counts:{steamid}:{appid}", ACH_TTL, contar)
+        return await self._cached(f"player_ach:{steamid}:{appid}", ACH_TTL, buscar)
 
     async def _global_percentages(self, appid: int) -> dict[str, float]:
         """Raridade por `apiname`. Best-effort: falha vira {}, nunca propaga.
@@ -307,7 +394,7 @@ def _percent(achieved: int, total: int) -> float:
     return achieved / total * 100 if total else 0.0
 
 
-def _sort(games: list[Game], sort: str) -> None:
+def _sort(games: list[Game], sort: Sort) -> None:
     if sort == "name":
         games.sort(key=lambda g: g.name.lower())
     elif sort == "percent":

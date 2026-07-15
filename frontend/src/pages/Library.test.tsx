@@ -152,6 +152,106 @@ describe("Library", () => {
     expect(screen.getByText(/1 jogo 100%/)).toBeInTheDocument();
   });
 
+  it("conta os jogos 'quase 100%' no resumo", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            appid: 10,
+            name: "Portal",
+            playtime_minutes: 90,
+            icon_url: null,
+            percent: 85,
+            achieved_count: 17,
+            total_count: 20,
+          },
+          {
+            appid: 20,
+            name: "Half-Life 2",
+            playtime_minutes: 30,
+            icon_url: null,
+            percent: 40,
+            achieved_count: 4,
+            total_count: 10,
+          },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?sort=percent");
+
+    expect(await screen.findByText(/1 jogo quase 100%/)).toBeInTheDocument();
+  });
+
+  it("no resumo, 'quase 100%' vem antes de '100%'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            appid: 10,
+            name: "Quase",
+            playtime_minutes: 90,
+            icon_url: null,
+            percent: 85,
+            achieved_count: 17,
+            total_count: 20,
+          },
+          {
+            appid: 20,
+            name: "Completo",
+            playtime_minutes: 30,
+            icon_url: null,
+            percent: 100,
+            achieved_count: 20,
+            total_count: 20,
+          },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?sort=percent");
+
+    expect(
+      await screen.findByText(/1 jogo quase 100% · 1 jogo 100%/),
+    ).toBeInTheDocument();
+  });
+
+  it("omite 'quase 100%' do resumo quando nenhum jogo está quase lá", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            appid: 10,
+            name: "Completo",
+            playtime_minutes: 90,
+            icon_url: null,
+            percent: 100,
+            achieved_count: 20,
+            total_count: 20,
+          },
+          {
+            appid: 20,
+            name: "Longe",
+            playtime_minutes: 30,
+            icon_url: null,
+            percent: 40,
+            achieved_count: 4,
+            total_count: 10,
+          },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?sort=percent");
+
+    // O contador de 100% aparece (há dados), mas o de "quase" não.
+    expect(await screen.findByText(/1 jogo 100%/)).toBeInTheDocument();
+    expect(screen.queryByText(/quase 100%/)).not.toBeInTheDocument();
+  });
+
   it("resumo acompanha a busca e some com o contador de 100% sem dados de conquista", async () => {
     vi.stubGlobal(
       "fetch",

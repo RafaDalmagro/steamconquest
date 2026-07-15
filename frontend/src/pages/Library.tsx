@@ -10,6 +10,7 @@ import { Message } from "@/components/Message";
 import { SORTS, SortBar } from "@/components/SortBar";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isQuaseLa } from "@/lib/progress";
 
 const GRID = "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4";
 const SEM_CATEGORIA = "Sem categoria";
@@ -29,6 +30,8 @@ function resumo(games: Game[]): string {
   // Gatilho é a presença do percentual, não o valor do sort: `ach_count`
   // também preenche as conquistas, e amarrar em `sort === "percent"` erraria lá.
   if (games.some((g) => g.percent != null)) {
+    const quase = games.filter((g) => isQuaseLa(g.percent)).length;
+    if (quase > 0) partes.push(`${plural(quase, "jogo")} quase 100%`);
     const perfeitos = games.filter((g) => g.percent === 100).length;
     partes.push(`${plural(perfeitos, "jogo")} 100%`);
   }

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { formatarData } from "@/lib/format";
+import { isQuaseLa } from "@/lib/progress";
 import type { Game } from "@/api/client";
 
 // Mesma CDN pública de assets já usada pelo icon_url — não envolve a API key.
@@ -53,6 +54,11 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
           {complete && (
             <span className="absolute right-1.5 top-1.5 rounded-sm bg-achieved px-1.5 py-0.5 font-display text-xs font-semibold text-achieved-foreground">
               ✦ 100%
+            </span>
+          )}
+          {isQuaseLa(game.percent) && (
+            <span className="absolute right-1.5 top-1.5 rounded-sm border border-achieved bg-background/70 px-1.5 py-0.5 font-display text-xs font-semibold text-achieved">
+              Quase lá
             </span>
           )}
         </div>

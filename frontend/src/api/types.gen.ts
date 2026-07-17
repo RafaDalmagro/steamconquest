@@ -274,7 +274,6 @@ export interface operations {
     list_games_api_users__steamid__games_get: {
         parameters: {
             query?: {
-                sort?: "playtime" | "name" | "percent" | "ach_count" | "last_played";
                 include?: ("achievements" | "genres")[];
             };
             header?: never;

@@ -1,15 +1,17 @@
 import type { components, paths } from "./types.gen";
 
+import type { Sort } from "@/components/SortBar";
+
 export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
 export type PlayerSummary = components["schemas"]["PlayerSummary"];
 export type ResolvedProfile = components["schemas"]["ResolvedProfile"];
 
-// Vem do OpenAPI, não de uma união escrita à mão: sort novo no backend vira erro
-// de tipo aqui até a UI tratá-lo. `npm run generate:api` é o que sincroniza.
+// Vem do OpenAPI, não de uma união escrita à mão: include novo no backend vira
+// erro de tipo aqui até a UI tratá-lo. `npm run generate:api` é o que sincroniza.
 type GamesQuery = paths["/api/users/{steamid}/games"]["get"]["parameters"]["query"];
-export type Sort = NonNullable<NonNullable<GamesQuery>["sort"]>;
+export type Include = NonNullable<NonNullable<GamesQuery>["include"]>[number];
 
 // Não vem da API: é o estado de agrupamento da *UI*. A API só *inclui* o gênero
 // (`include=genres`); quem agrupa de fato é a Library, client-side.
@@ -59,18 +61,22 @@ export function buildApiUrl(
 	return `${normalizedBaseUrl}${normalizedPath}`;
 }
 
-// A API não deduz o que buscar: quem pede declara. Ordenar por progresso exige o
-// dado de conquistas, e agrupar por gênero exige o gênero — a tradução de intenção
-// da UI para os dados caros mora aqui, num lugar só.
-export const fetchGames = (
-	steamid: string,
-	sort: Sort,
-	group: Group = "none",
-) => {
-	const params = new URLSearchParams({ sort });
-	if (sort === "percent" || sort === "ach_count")
-		params.append("include", "achievements");
-	if (group === "genre") params.append("include", "genres");
+// A API não deduz o que buscar: quem pede declara. A tradução de intenção da UI
+// para os dados caros mora aqui, num lugar só — ordenar por progresso exige o dado
+// de conquistas, e agrupar por gênero exige o gênero. Ordenar por nome, tempo ou
+// data não exige nada: sai do payload base, e por isso não custa uma requisição.
+//
+// É esta lista que identifica a query no cache (ver useGames), então a ordem dos
+// itens tem de ser estável — ela é derivada, nunca montada pelo caller.
+export const includesFor = (sort: Sort, group: Group): Include[] => [
+	...(sort === "percent" || sort === "ach_count"
+		? (["achievements"] as const)
+		: []),
+	...(group === "genre" ? (["genres"] as const) : []),
+];
+
+export const fetchGames = (steamid: string, include: Include[]) => {
+	const params = new URLSearchParams(include.map((i) => ["include", i]));
 
 	return getJSON<Game[]>(
 		buildApiUrl(`/users/${encodeURIComponent(steamid)}/games?${params}`),

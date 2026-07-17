@@ -28,7 +28,7 @@ describe("useGames", () => {
       ),
     );
 
-    const { result } = renderHook(() => useGames("76561197960287930", "playtime"), {
+    const { result } = renderHook(() => useGames("76561197960287930", []), {
       wrapper: wrapper(),
     });
 
@@ -44,7 +44,7 @@ describe("useGames", () => {
       ),
     );
 
-    const { result } = renderHook(() => useGames("76561197960287930", "playtime"), {
+    const { result } = renderHook(() => useGames("76561197960287930", []), {
       wrapper: wrapper(),
     });
 

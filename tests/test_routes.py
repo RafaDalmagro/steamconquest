@@ -21,7 +21,6 @@ class FakeService:
         self._detail = detail
         self._profile = profile
         self._error = error
-        self.sort_recebido = None
         self.include_recebido = None
         self.steamid_recebido = None
 
@@ -31,9 +30,8 @@ class FakeService:
             raise self._error
         return self._profile
 
-    async def list_library(self, steamid, sort="playtime", include=()):
+    async def list_library(self, steamid, include=()):
         self.steamid_recebido = steamid
-        self.sort_recebido = sort
         self.include_recebido = include
         if self._error:
             raise self._error
@@ -85,24 +83,6 @@ def test_lista_jogos_retorna_json():
     ]
 
 
-def test_lista_repassa_o_parametro_sort_ao_servico():
-    service = FakeService(games=[])
-    client = client_with(service)
-
-    client.get(f"/api/users/{STEAMID}/games?sort=percent")
-
-    assert service.sort_recebido == "percent"
-
-
-def test_lista_aceita_o_sort_por_ultima_vez_jogado():
-    service = FakeService(games=[])
-    client = client_with(service)
-
-    client.get(f"/api/users/{STEAMID}/games?sort=last_played")
-
-    assert service.sort_recebido == "last_played"
-
-
 def test_lista_repassa_o_include_ao_servico():
     """`include` é repetível: o caller declara cada dado caro que quer."""
     service = FakeService(games=[])
@@ -114,38 +94,29 @@ def test_lista_repassa_o_include_ao_servico():
 
 
 def test_include_fora_do_vocabulario_retorna_422():
+    """O vocabulário de include é publicado no OpenAPI — lixo é erro do caller.
+
+    Ignorar em silêncio esconderia o typo de quem chama e obrigaria a rota a
+    manter uma segunda lista de includes válidos, fora do schema.
+    """
     service = FakeService(games=[])
     client = client_with(service)
 
     resp = client.get(f"/api/users/{STEAMID}/games?include=xpto")
 
     assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], str)  # mesmo contrato de erro dos demais
     assert service.include_recebido is None  # nem chega ao serviço
 
 
 def test_sem_include_nada_e_buscado_alem_da_biblioteca():
+    """O caminho barato é o default: sem `include`, uma chamada à Steam."""
     service = FakeService(games=[])
     client = client_with(service)
 
-    client.get(f"/api/users/{STEAMID}/games?sort=percent")
+    client.get(f"/api/users/{STEAMID}/games")
 
-    assert service.include_recebido == []  # sort não implica busca
-
-
-def test_sort_fora_do_vocabulario_retorna_422():
-    """O vocabulário de sort é publicado no OpenAPI — lixo é erro do caller.
-
-    Coagir em silêncio para `playtime` esconderia o typo de quem chama e obrigaria
-    a rota a manter uma segunda lista de sorts válidos, fora do schema.
-    """
-    service = FakeService(games=[])
-    client = client_with(service)
-
-    resp = client.get(f"/api/users/{STEAMID}/games?sort=xpto")
-
-    assert resp.status_code == 422
-    assert isinstance(resp.json()["detail"], str)  # mesmo contrato de erro dos demais
-    assert service.sort_recebido is None  # nem chega ao serviço
+    assert service.include_recebido == []
 
 
 def test_lista_repassa_o_steamid_ao_servico():

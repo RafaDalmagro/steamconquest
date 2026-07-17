@@ -100,6 +100,56 @@ describe("Library", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("reordena sem novo request ao servidor", async () => {
+    // Fora de ordem de propósito: quem ordena é o cliente, com o dado que já tem.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse([
+        { appid: 20, name: "Half-Life 2", playtime_minutes: 60, icon_url: null },
+        { appid: 10, name: "Portal", playtime_minutes: 480, icon_url: null },
+        { appid: 30, name: "Antichamber", playtime_minutes: 5, icon_url: null },
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<App />, "/u/76561197960287930");
+    await screen.findByText("Portal");
+
+    const nomes = () =>
+      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(nomes()).toEqual(["Portal", "Half-Life 2", "Antichamber"]); // playtime
+
+    await userEvent.click(screen.getByRole("button", { name: "Nome" }));
+
+    expect(nomes()).toEqual(["Antichamber", "Half-Life 2", "Portal"]);
+    // Reordenar não muda o dado: nada além da carga inicial (jogos + perfil).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reflete a busca na URL e aceita deep-link por ?q=", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          { appid: 10, name: "Portal", playtime_minutes: 480, icon_url: null },
+          { appid: 20, name: "Half-Life 2", playtime_minutes: 60, icon_url: null },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?q=half");
+    await screen.findByText("Half-Life 2");
+
+    // Deep-link: a busca já veio aplicada da URL, sem ninguém digitar.
+    expect(screen.queryByText("Portal")).not.toBeInTheDocument();
+    expect(screen.getByRole("searchbox")).toHaveValue("half");
+
+    await userEvent.clear(screen.getByRole("searchbox"));
+    await userEvent.type(screen.getByRole("searchbox"), "portal");
+
+    expect(screen.getByText("Portal")).toBeInTheDocument();
+    expect(screen.queryByText("Half-Life 2")).not.toBeInTheDocument();
+  });
+
   it("avisa quando a busca não encontra nenhum jogo", async () => {
     vi.stubGlobal(
       "fetch",
@@ -271,8 +321,9 @@ describe("Library", () => {
 
     await userEvent.type(screen.getByRole("searchbox"), "half");
 
-    expect(screen.getByText(/1 jogo/)).toBeInTheDocument();
-    expect(screen.getByText(/0,5 h/)).toBeInTheDocument();
+    // Casa a linha inteira: o card do jogo também mostra "0,5 h" (mesmo
+    // formatador), então /0,5 h/ sozinho seria ambíguo.
+    expect(screen.getByText("1 jogo · 0,5 h")).toBeInTheDocument();
   });
 
   it("mostra o nome e o avatar do perfil no título", async () => {
@@ -297,10 +348,10 @@ describe("Library", () => {
         screen.getByRole("heading", { name: /Biblioteca de Fulano/ }),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("img", { name: "Fulano" })).toHaveAttribute(
-      "src",
-      "http://a/av.jpg",
-    );
+    // Avatar é decorativo (alt=""): o nome já vem no h1 ao lado. Busca pelo src.
+    expect(
+      document.querySelector('img[src="http://a/av.jpg"]'),
+    ).toBeInTheDocument();
   });
 
   it("mantém a biblioteca quando o perfil falha", async () => {

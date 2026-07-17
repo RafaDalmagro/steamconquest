@@ -1,12 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import {
   fetchGameDetail,
   fetchGames,
   fetchPlayerSummary,
   fetchResolvedSteamId,
-  type Group,
-  type Sort,
+  type Include,
 } from "./client";
 import { isSteamId64 } from "@/lib/steamid";
 
@@ -16,11 +15,18 @@ import { isSteamId64 } from "@/lib/steamid";
 // consome estes hooks. O appid mal formado fica de fora de propósito: o 422 do
 // backend já devolve mensagem legível, e assim não há tela em branco.
 
-export function useGames(steamid: string, sort: Sort, group: Group = "none") {
+// A chave é o `include`, não o filtro: reordenar ou buscar por nome não muda o
+// dado, então não pode custar uma requisição. Só pedir algo que ainda não chegou
+// (conquistas, gênero) justifica uma entrada nova de cache — e são no máximo 4.
+export function useGames(steamid: string, include: Include[]) {
   return useQuery({
-    queryKey: ["games", steamid, sort, group],
-    queryFn: () => fetchGames(steamid, sort, group),
+    queryKey: ["games", steamid, include],
+    queryFn: () => fetchGames(steamid, include),
     enabled: isSteamId64(steamid),
+    // Quando a chave muda é porque pedimos um dado *a mais*: a lista atual segue
+    // válida, então fica em tela (com os campos novos vazios) enquanto o refetch
+    // corre em background. Sem isto, pedir o % trocaria a biblioteca por skeleton.
+    placeholderData: keepPreviousData,
   });
 }
 

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -15,24 +15,19 @@ import { normalizeSteamId } from "@/lib/steamid";
 
 const STORAGE_KEY = "lastSteamId";
 
-const PASSOS = [
-	{
-		titulo: "Informe seu perfil",
-		texto: "Cole o link do seu perfil Steam, o nome dele ou o SteamID64. Nada de senha nem login — só o que é público.",
-	},
-	{
-		titulo: "Veja sua biblioteca",
-		texto: "Todos os jogos com tempo de jogo, ordenáveis por horas, nome, progresso ou conquistas.",
-	},
-	{
-		titulo: "Acompanhe o progresso",
-		texto: "Em cada jogo, o que já foi conquistado e o que falta, com o percentual de conclusão.",
-	},
-];
+// Constante de produto, não config (CON-081): não varia entre deploys, não é
+// segredo (vai no href, e todo VITE_* é público de qualquer forma), e uma var
+// não-setada criaria um modo de falha idêntico a "o perfil ficou privado".
+// Perfil verificado contra a API real em 16/07/2026: público, 155 jogos, com
+// progresso de conquistas real. Ficou privado? O link some sozinho (REQ-081).
+const DEMO_STEAMID = "76561198082363621";
 
-// Atalho para quem já consultou antes: o último id fica no localStorage e o
-// perfil é buscado só para dar rosto e nome ao link. Falhou? Some sem alarde.
-function ContinuarComo({ steamid }: { steamid: string }) {
+// Card de perfil que o próprio perfil justifica: o nome e o avatar vêm da API,
+// então o link só existe se o perfil existir. Falhou? Some sem alarde — vale
+// tanto para o atalho de quem já consultou (o id do localStorage) quanto para a
+// demo (REQ-081), e é o que impede um perfil que virou privado de entregar 404
+// na cara de quem chegou agora.
+function PerfilLink({ steamid, rotulo }: { steamid: string; rotulo: string }) {
 	const { data: profile } = usePlayerSummary(steamid);
 	if (!profile) return null;
 
@@ -45,7 +40,7 @@ function ContinuarComo({ steamid }: { steamid: string }) {
 					<Avatar profile={profile} className="size-10" />
 					<div className="min-w-0">
 						<p className="text-xs uppercase tracking-widest text-muted-foreground">
-							Continuar como
+							{rotulo}
 						</p>
 						<p className="truncate font-display font-semibold">
 							{profile.personaname}
@@ -68,6 +63,13 @@ export function Home() {
 	const [verificando, setVerificando] = useState(false);
 	// Lazy: o Home re-renderiza a cada tecla digitada; o localStorage não muda.
 	const [lastSteamId] = useState(() => localStorage.getItem(STORAGE_KEY) ?? "");
+	const erroRef = useRef<HTMLParagraphElement>(null);
+
+	// Erro de submit leva o foco: sem isso, quem navega por teclado ou leitor de
+	// tela fica no botão e não sabe que apareceu um texto acima dele.
+	useEffect(() => {
+		if (error) erroRef.current?.focus();
+	}, [error]);
 
 	// O usuário não sabe o próprio SteamID64 — ele tem o link ou o nome do perfil.
 	// Três etapas, e cada uma só existe se a anterior não bastou: formato (local,
@@ -103,22 +105,29 @@ export function Home() {
 		}
 	};
 
+	// Centrado na vertical porque a página é só o herói: sem o "Como funciona"
+	// que antes ocupava a dobra, o conteúdo encostava no topo e sobrava meia tela
+	// morta embaixo. O desconto de 9rem é o header + o p-6 do <main> (App.tsx).
 	return (
-		<div className="flex flex-col gap-16 py-10">
+		<div className="flex min-h-[calc(100vh-9rem)] items-center py-10">
 			<section className="grid items-center gap-10 md:grid-cols-[1.2fr_1fr]">
 				<div>
 					<p className="font-display text-sm uppercase tracking-[0.3em] text-primary">
 						Conquistas Steam
 					</p>
-					<h1 className="mt-3 text-4xl font-semibold uppercase leading-tight tracking-wide sm:text-5xl">
-						Cada troféu da sua
-						<br />
-						biblioteca, em um lugar
+					{/* Nomeia o loop de completude, não a agregação (REQ-080):
+					    "tudo em um lugar" é o que todo tracker promete, e arquivo
+					    morto não puxa ninguém — o que puxa é o loop aberto (efeito
+					    Zeigarnik, ver spec-quase-la). A promessa só é honesta
+					    porque o perfil de exemplo a prova a um clique (CON-080):
+					    se o link de demo cair, o título volta para agregação. */}
+					<h1 className="mt-3 text-balance text-4xl font-semibold uppercase leading-tight tracking-wide sm:text-5xl">
+						O que falta para o seu próximo 100%
 					</h1>
 					<p className="mt-4 max-w-prose text-lg text-muted-foreground">
-						Veja quanto já jogou, quantas conquistas faltam e o quão
-						perto está de 100% em cada jogo direto da Steam, em
-						tempo real.
+						Veja quais jogos da sua biblioteca estão a poucas
+						conquistas de fechar, quanto já jogou e o que ainda falta
+						em cada um — direto da Steam, em tempo real.
 					</p>
 				</div>
 
@@ -136,8 +145,10 @@ export function Home() {
 						    digitá-los. */}
 						<Input
 							id="steamid"
+							name="steamid"
 							autoComplete="off"
-							placeholder="steamcommunity.com/id/seu-perfil"
+							spellCheck={false}
+							placeholder="steamcommunity.com/id/seu-perfil…"
 							value={value}
 							onChange={(e) => {
 								setValue(e.target.value);
@@ -145,9 +156,13 @@ export function Home() {
 							}}
 						/>
 						{error && (
+							// tabIndex={-1} só para receber o foco programático do
+							// submit — não entra na ordem de tabulação.
 							<p
+								ref={erroRef}
+								tabIndex={-1}
 								role="alert"
-								className="text-sm text-destructive">
+								className="text-sm text-destructive outline-none">
 								{error}
 							</p>
 						)}
@@ -157,6 +172,15 @@ export function Home() {
 							disabled={verificando}>
 							{verificando ? "Verificando…" : "Ver biblioteca"}
 						</Button>
+
+						{/* A objeção ("por que este site quer meu perfil?") dispara
+						    aqui, no campo — então a resposta mora aqui, visível, e
+						    não dentro do <details> abaixo nem numa seção que só se
+						    lê depois de já ter decidido. Estava sepultada no passo 1
+						    do "Como funciona": respondia depois do pedido. */}
+						<p className="text-xs text-muted-foreground">
+							Sem login e sem senha — só dados públicos da Steam.
+						</p>
 
 						{/* Fallback, não caminho principal: quem já sabe o id nem
 						    abre. `<details>` nativo — acessível por teclado e leitor
@@ -186,31 +210,19 @@ export function Home() {
 						</details>
 					</form>
 
-					{lastSteamId && <ContinuarComo steamid={lastSteamId} />}
+					{/* Um alvo por visitante (REQ-081): quem já tem perfil salvo
+					    veio buscar a própria biblioteca — uma demo ao lado só
+					    levaria para longe dela. Quem chega sem nada não tem o que
+					    continuar, e precisa é de prova. */}
+					{lastSteamId ? (
+						<PerfilLink steamid={lastSteamId} rotulo="Continuar como" />
+					) : (
+						<PerfilLink
+							steamid={DEMO_STEAMID}
+							rotulo="Ver um perfil de exemplo"
+						/>
+					)}
 				</div>
-			</section>
-
-			<section>
-				<h2 className="font-display text-sm uppercase tracking-widest text-muted-foreground">
-					Como funciona
-				</h2>
-				<ol className="mt-4 grid gap-4 sm:grid-cols-3">
-					{PASSOS.map((passo, i) => (
-						<li
-							key={passo.titulo}
-							className="rounded-lg border border-border bg-card p-5">
-							<span className="font-display text-2xl font-semibold text-primary tabular-nums">
-								{String(i + 1).padStart(2, "0")}
-							</span>
-							<h3 className="mt-2 font-semibold uppercase tracking-wide">
-								{passo.titulo}
-							</h3>
-							<p className="mt-1 text-sm text-muted-foreground">
-								{passo.texto}
-							</p>
-						</li>
-					))}
-				</ol>
 			</section>
 		</div>
 	);

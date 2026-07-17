@@ -12,7 +12,10 @@ export function AchievementItem({ ach }: { ach: Achievement }) {
   const raridade = ach.global_percent;
 
   return (
-    <Card className={cn(!ach.achieved && "opacity-50")}>
+    // Pendente é dessaturada, não apagada: `opacity-50` no card inteiro levava o
+    // texto muted a ~2.6:1 de contraste. A dessaturação fica no ícone (decorativo)
+    // e o selo "Pendente" carrega o estado — o texto continua legível.
+    <Card className="[content-visibility:auto] [contain-intrinsic-size:auto_64px]">
       <CardContent>
         {ach.icon_url && (
           <img
@@ -21,7 +24,10 @@ export function AchievementItem({ ach }: { ach: Achievement }) {
             width={32}
             height={32}
             loading="lazy"
-            className="size-8 flex-none rounded"
+            className={cn(
+              "size-8 flex-none rounded",
+              !ach.achieved && "opacity-60 grayscale",
+            )}
           />
         )}
         <span className="flex flex-col">

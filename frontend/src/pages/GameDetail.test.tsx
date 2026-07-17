@@ -83,6 +83,23 @@ describe("GameDetail", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("liga a aba ao painel da lista e reflete o filtro na URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(detailComConquistas)));
+
+    // Deep-link: o filtro vem da URL, sem ninguém clicar.
+    renderWithProviders(<App />, "/u/76561197960287930/game/10?filter=locked");
+
+    await screen.findByText("Conquista B");
+    expect(screen.queryByText("Conquista A")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Pendentes" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // A lista tem de existir como tabpanel — é o que o aria-controls da aba
+    // promete ao leitor de tela.
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Conquista B");
+  });
+
   it("mostra a data de desbloqueio só nas conquistas obtidas", async () => {
     vi.stubGlobal(
       "fetch",

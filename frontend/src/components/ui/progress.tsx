@@ -20,6 +20,9 @@ function Progress({
   return (
     <ProgressPrimitive.Root
       value={value}
+      // role="progressbar" sem nome é anunciado só como "barra de progresso".
+      // Default genérico; quem tem vários na tela passa um específico.
+      aria-label="Progresso de conquistas"
       className={cn(
         "relative h-2 w-full overflow-hidden bg-background",
         segmented && SEGMENTED,
@@ -29,7 +32,7 @@ function Progress({
     >
       <ProgressPrimitive.Indicator
         className={cn(
-          "h-full transition-all",
+          "h-full transition-transform",
           complete ? "bg-achieved" : "bg-primary",
         )}
         style={{ transform: `translateX(-${100 - (value ?? 0)}%)` }}

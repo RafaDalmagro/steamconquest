@@ -2,6 +2,9 @@
 
 /* Design system "Pixel Ember" — arcade retrô, neon sobre carvão (tema escuro único). */
 :root {
+  /* Tema escuro único: avisa o navegador para scrollbar, inputs e controles
+     nativos virem escuros também. */
+  color-scheme: dark;
   --radius: 0.25rem;
   --background: #0d0d14;
   --foreground: #d8d9e0;
@@ -58,6 +61,28 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+/* Mata o atraso de 300ms do double-tap-to-zoom nos cards e botões. */
+a,
+button,
+summary,
+[role="tab"] {
+  touch-action: manipulation;
+}
+
+/* Rede de segurança: quem pediu menos movimento não recebe nenhum. Vale para o
+   que não tem variante `motion-reduce:` explícita (animate-pulse do skeleton,
+   transições do Radix). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 h1,

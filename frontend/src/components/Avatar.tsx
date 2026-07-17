@@ -13,9 +13,14 @@ export function Avatar({
   if (!profile.avatar_url) return null;
 
   return (
+    // alt="" de propósito: o nome do jogador sempre aparece em texto ao lado,
+    // e repeti-lo no alt faria o leitor de tela anunciar duas vezes. Dimensões
+    // fixas (avatar da Steam é 64×64) evitam reflow antes de a imagem chegar.
     <img
       src={profile.avatar_url}
-      alt={profile.personaname}
+      alt=""
+      width={64}
+      height={64}
       className={cn("rounded border border-border", className)}
     />
   );

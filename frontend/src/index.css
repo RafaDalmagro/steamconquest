@@ -27,6 +27,10 @@
   --header: #0a0a10;
   --font-display: "Chakra Petch", system-ui, sans-serif;
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  /* Curva de saída forte para UI que entra/sai: começa rápido e assenta devagar,
+     que é o oposto do `ease-in` (atrasa justo o instante que o olho está vendo).
+     Token compartilhado — os planos 001..003 em `plans/` também o usam. */
+  --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 @theme inline {
@@ -71,13 +75,62 @@ summary,
   touch-action: manipulation;
 }
 
+/* Abre o <details> deslizando, sem uma linha de JS — o elemento nativo continua
+   dono da acessibilidade (teclado, leitor de tela), que é o motivo de ele ter
+   sido escolhido em Home.tsx. `::details-content` é o único jeito de animar isto
+   por CSS (Baseline desde set/2025).
+
+   **Só a abertura anima; o fechamento é instantâneo.** Não é esquecimento: animar
+   o fechamento exige `transition: content-visibility ... allow-discrete`, e isso
+   **trava a gaveta aberta para sempre** no Chrome 131 — fechado (`open=false`) e
+   ainda ocupando a altura toda, com `content-visibility` preso em `visible`.
+   Reproduzido em HTML puro, sem React nem Tailwind, em 16/07/2026; o Chrome desta
+   máquina é justamente o 131, a primeira versão que trouxe o pseudo-elemento.
+   Se um dia o alvo mínimo passar de 131, vale retestar: é só somar
+   `content-visibility 200ms allow-discrete` à lista.
+
+   Degradação: `interpolate-size` é o que permite interpolar até `auto`, e só o
+   Chromium tem (Chrome/Edge 129+; Safari e Firefox, não — caniuse em 16/07/2026,
+   69% global). Sem ele a altura salta e só o fade corre — o comportamento de
+   hoje, nunca pior. Fica em `details` (herda para o pseudo), não em `:root`:
+   ninguém mais no app transiciona altura, e um opt-in global mudaria o cálculo de
+   qualquer `auto` futuro sem que se peça.
+
+   ⚠️ Anima `block-size`, que custa layout — a regra geral é só `transform`/
+   `opacity`. É consciente: numa gaveta a altura *é* a animação (`scaleY`
+   deformaria o texto), e o custo é irrisório numa subárvore de três linhas que,
+   por ser fallback, quase ninguém abre. */
+details {
+  interpolate-size: allow-keywords;
+}
+
+details::details-content {
+  block-size: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    block-size 200ms var(--ease-snappy),
+    opacity 200ms var(--ease-snappy);
+}
+
+details[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+}
+
 /* Rede de segurança: quem pediu menos movimento não recebe nenhum. Vale para o
    que não tem variante `motion-reduce:` explícita (animate-pulse do skeleton,
-   transições do Radix). */
+   transições do Radix).
+
+   `details::details-content` está na lista porque `*` **não** o alcança: o
+   seletor universal casa elementos, e os únicos pseudo-elementos aqui são
+   `::before`/`::after`. Sem esta linha, quem pede menos movimento receberia a
+   gaveta animada assim mesmo. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after {
+  *::after,
+  details::details-content {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

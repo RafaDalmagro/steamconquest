@@ -226,4 +226,122 @@ describe("GameDetail", () => {
     expect(screen.queryByText(/dos jogadores/)).not.toBeInTheDocument();
     expect(screen.queryByText("Rara")).not.toBeInTheDocument();
   });
+
+  it("leva a conquista pendente ao vídeo, buscando pelo nome em inglês", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComConquistas,
+          name: "Nioh: Complete Edition",
+          achievements: [
+            { ...detailComConquistas.achievements[1], name_en: "Spa Healer" },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    const link = await screen.findByRole("link", { name: "Como conseguir" });
+    // O nome do jogo precisa chegar até o card: sem ele a busca acha qualquer
+    // "Spa Healer" do YouTube, menos o do Nioh.
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.youtube.com/results?search_query=Nioh%3A%20Complete%20Edition%20Spa%20Healer%20achievement",
+    );
+    // Sem noopener, a página aberta pode redirecionar esta aba.
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
+  });
+
+  it("não oferece 'como conseguir' numa conquista já obtida", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComConquistas,
+          achievements: [
+            { ...detailComConquistas.achievements[0], name_en: "Spa Healer" },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    await screen.findByText("Conquista A");
+    expect(
+      screen.queryByRole("link", { name: "Como conseguir" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("não oferece 'como conseguir' quando não há nome em inglês para buscar", async () => {
+    // name_en null = schema inglês indisponível ou conquista oculta. Buscar o
+    // apiname não acharia nada, então o link não existe.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComConquistas,
+          achievements: [
+            { ...detailComConquistas.achievements[1], name_en: null },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    await screen.findByText("Conquista B");
+    expect(
+      screen.queryByRole("link", { name: "Como conseguir" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("aponta para os guias de conquista da comunidade, uma vez por jogo", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ ...detailComConquistas, appid: 485510 })),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/485510");
+
+    // Filtro por tag, não por texto: buscar o nome da conquista devolve zero
+    // resultado e a Steam cai calada nos guias populares — link que mente.
+    const links = await screen.findAllByRole("link", {
+      name: "Guias da comunidade",
+    });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute(
+      "href",
+      "https://steamcommunity.com/app/485510/guides/?requiredtags%5B%5D=Achievements",
+    );
+    expect(links[0]).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("não aponta para guias de conquista num jogo que não tem conquistas", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          appid: 10,
+          name: "Portal",
+          supports_achievements: false,
+          achieved_count: 0,
+          total_count: 0,
+          percent: 0,
+          achievements: [],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+
+    await screen.findByText("Este jogo não possui conquistas.");
+    expect(
+      screen.queryByRole("link", { name: "Guias da comunidade" }),
+    ).not.toBeInTheDocument();
+  });
 });

@@ -92,6 +92,8 @@ export interface components {
             apiname: string;
             /** Display Name */
             display_name: string;
+            /** Name En */
+            name_en?: string | null;
             /** Description */
             description?: string | null;
             /** Icon Url */

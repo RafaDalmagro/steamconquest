@@ -139,9 +139,9 @@ o catálogo global, não a conta).
   oficial, não inventar camadas.
 - Cache só via `TTLCache`, sempre pelos helpers do service (chaves
   `owned_games:{steamid}`, `player_ach:{steamid}:{appid}`, `schema:{appid}`,
-  `genres:{appid}`, `global_pct:{appid}`, `player_summary:{steamid}`,
-  `vanity:{nome}`). É volátil e por processo; **não** introduzir banco para
-  "guardar histórico" sem aprovação explícita.
+  `schema_en:{appid}`, `genres:{appid}`, `global_pct:{appid}`,
+  `player_summary:{steamid}`, `vanity:{nome}`). É volátil e por processo; **não**
+  introduzir banco para "guardar histórico" sem aprovação explícita.
 - Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga,
   nada é guardado); `_cached_ou_ausente()` quando o **"não existe" é uma resposta**
   e precisa virar valor no cache. O segundo vale para o que é chaveado por **input
@@ -154,10 +154,18 @@ o catálogo global, não a conta).
   incluir `name`/`description` (payload dobra) que o app descartaria, pois o texto
   exibido vem do `schema:{appid}` — chave por **jogo**, compartilhada. Não voltar a
   guardar o payload cru: o teto do cache conta entradas, não bytes.
-- `global_pct:{appid}` é chaveado pelo **jogo**, não pelo jogador: a raridade é a
-  mesma para todo mundo, então o cache é compartilhado entre visitantes. Raridade
-  é **decoração** — falha nela nunca pode derrubar o detalhe (o service engole o
-  erro e devolve `{}`).
+- `global_pct:{appid}` e `schema_en:{appid}` são chaveados pelo **jogo**, não pelo
+  jogador: raridade e nome em inglês são os mesmos para todo mundo, então o cache
+  é compartilhado entre visitantes. Ambos são **decoração** — falha neles nunca
+  pode derrubar o detalhe (o service engole o erro e devolve `{}`). Quando engolir,
+  engula **dentro** do `buscar()`, com TTL de miss curto (`*_MISS_TTL`): devolver
+  `{}` fora do cache faz cada request re-tentar uma Steam que está em 429.
+- `schema_en:{appid}` existe porque `display_name` é pt-BR e a Steam devolve
+  **outro texto**, não tradução ("Descanso no Spa" × "Spa Healer"). Guia e vídeo
+  de conquista são escritos em inglês, então o nome buscável tem de vir de um
+  segundo `GetSchemaForGame` com `l=english`. O `name_en` **não** cai para
+  `apiname` quando falta: buscar `ACH_SPA` não acha nada, e link que não acha nada
+  é pior que link nenhum.
 - O `TTLCache` tem **teto de entradas** (`_MAXSIZE`). Não remover: o `steamid`
   vem da URL (input público), então o espaço de chaves é controlado por quem
   chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.

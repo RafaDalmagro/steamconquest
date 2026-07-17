@@ -64,6 +64,11 @@ class Achievement(BaseModel):
 
     apiname: str
     display_name: str
+    # Nome canônico em inglês — nunca exibido, existe para ser *pesquisável*.
+    # O `display_name` é pt-BR e não serve: a Steam devolve textos diferentes,
+    # não traduções ("Descanso no Spa" × "Spa Healer"), e guia de conquista é
+    # escrito em inglês. None = o schema inglês não trouxe esta conquista.
+    name_en: str | None = None
     description: str | None = None
     icon_url: str | None = None
     achieved: bool

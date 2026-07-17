@@ -128,10 +128,16 @@ class SteamClient:
             return None
         return stats["achievements"]
 
-    async def get_schema(self, appid: int) -> dict:
+    async def get_schema(self, appid: int, lang: str | None = None) -> dict:
+        """Schema do jogo. `lang=None` usa o idioma configurado (pt-BR).
+
+        O idioma é parâmetro da chamada, e não um segundo método, porque é
+        literalmente uma querystring diferente: o `name_en` do detalhe pede
+        `english` explícito; todo o resto do app quer o default.
+        """
         data = await self._get(
             "/ISteamUserStats/GetSchemaForGame/v2/",
-            {"appid": appid, "l": self._lang},
+            {"appid": appid, "l": lang or self._lang},
         )
         game = data.get("game", {})
         return {

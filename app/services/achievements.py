@@ -33,6 +33,10 @@ VANITY_TTL = PROFILE_TTL
 # absorve a rajada de quem marreta o mesmo ID inválido.
 NOT_FOUND_TTL = 60
 SCHEMA_TTL = 86_400
+# {} do schema inglês é sempre falha transitória (jogo sem schema já cai no
+# branch sem conquistas). TTL curto para não deixar o link "Como conseguir"
+# sumido por um dia inteiro por causa de um 429 de dez segundos.
+SCHEMA_EN_MISS_TTL = 3_600
 # Raridade é por *jogo*, não por jogador: a chave é o appid, então o cache é
 # compartilhado por todos os visitantes. O número anda devagar — 24h basta.
 GLOBAL_PCT_TTL = 86_400
@@ -171,12 +175,19 @@ class AchievementsService:
 
         # Independentes entre si: em paralelo o cold-start do detalhe custa uma
         # ida à Steam, não duas.
-        schema, raridade = await asyncio.gather(
-            self._schema(appid), self._global_percentages(appid)
+        schema, schema_en, raridade, _ = await asyncio.gather(
+            self._schema(appid),
+            self._schema_en(appid),
+            self._global_percentages(appid),
+            # Semeia owned_games: para o `_name` achar o nome de *loja* mesmo em
+            # deep-link/cache frio. No gather, não custa latência de parede; quem
+            # veio da biblioteca lê do cache e nem chama.
+            self._ensure_library(steamid),
         )
         name = self._name(schema, steamid, appid)
 
         meta = {a["name"]: a for a in schema.get("achievements", [])}
+        meta_en = {a["name"]: a for a in schema_en.get("achievements", [])}
         achievements: list[Achievement] = []
         achieved_count = 0
         for entry in player:
@@ -187,6 +198,11 @@ class AchievementsService:
                 Achievement(
                     apiname=entry.apiname,
                     display_name=m.get("displayName") or entry.apiname,
+                    # Sem fallback para `apiname` — ao contrário do display_name
+                    # acima. Ali o fallback existe para *mostrar* algo; aqui,
+                    # para *buscar*, e buscar "ACH_SPA" não acha nada. Link
+                    # ausente é honesto; link que não acha nada é ruído.
+                    name_en=meta_en.get(entry.apiname, {}).get("displayName"),
                     description=m.get("description"),
                     icon_url=m.get("icon") if entry.achieved else m.get("icongray"),
                     achieved=entry.achieved,
@@ -210,25 +226,15 @@ class AchievementsService:
         """Nome do jogo, da fonte mais confiável para a menos.
 
         A biblioteca vem primeiro porque traz o nome da **loja** — o que o
-        usuário reconhece. O `gameName` do schema é o nome interno do estúdio e
-        às vezes é um codinome ("GFREMP2" para Remnant II). Só vale como plano B,
-        para quem abre o detalhe sem ter passado pela biblioteca (deep-link).
-        """
-        return (
-            self._name_from_library(steamid, appid)
-            or schema.get("gameName")
-            or f"App {appid}"
-        )
-
-    def _name_from_library(self, steamid: str, appid: int) -> str:
-        """Nome do jogo pela biblioteca já cacheada — jogo sem schema não tem `gameName`.
-
-        Só lê o cache: buscar a biblioteca aqui custaria uma chamada à Steam só
-        para preencher um título. Quem chega pela biblioteca (o caminho normal)
-        já a tem em cache.
+        usuário reconhece. O `game_detail` garante que ela esteja em cache antes
+        de chamar aqui (`_ensure_library`), então o deep-link também acha o nome.
+        O `gameName` do schema é plano B só para jogo fora da biblioteca
+        (delistado): é o nome interno do estúdio, às vezes um codinome
+        ("GFREMP2" para Remnant II). `App {appid}` é o último recurso.
         """
         owned = self._cache.get(f"owned_games:{steamid}") or []
-        return next((g["name"] for g in owned if g["appid"] == appid), "")
+        nome = next((g["name"] for g in owned if g["appid"] == appid), "")
+        return nome or schema.get("gameName") or f"App {appid}"
 
     async def _assert_exists(self, steamid: str) -> None:
         """Levanta SteamProfileNotFound se a conta não existe; volta calado se existe."""
@@ -284,6 +290,18 @@ class AchievementsService:
             OWNED_TTL,
             lambda: self._client.get_owned_games(steamid),
         )
+
+    async def _ensure_library(self, steamid: str) -> None:
+        """Best-effort: garante owned_games: em cache para o `_name`.
+
+        Nome errado no título (e na busca de vídeo que o usa) é ruim, mas não
+        pode derrubar um detalhe que já tem tudo — mesma postura da raridade.
+        Falhou → `_name` cai no fallback antigo (`App {appid}`).
+        """
+        try:
+            await self._owned_games(steamid)
+        except SteamError:
+            pass
 
     async def _fill_counts(self, steamid: str, games: list[Game]) -> None:
         sem = asyncio.Semaphore(self._concurrency)
@@ -373,6 +391,30 @@ class AchievementsService:
     async def _schema(self, appid: int) -> dict:
         return await self._cached(
             f"schema:{appid}", SCHEMA_TTL, lambda: self._client.get_schema(appid)
+        )
+
+    async def _schema_en(self, appid: int) -> dict:
+        """Schema em inglês — só o `name_en`. Chave por *jogo*, compartilhada.
+
+        Irmão do `_schema()`, e não um parâmetro dele: são duas entradas de cache
+        distintas, e só esta é best-effort.
+
+        Best-effort como a raridade, e pelo mesmo motivo: `name_en` é decoração —
+        sem ele o link "Como conseguir" some, mas o detalhe tem tudo que importa.
+        O `{}` é cacheado com TTL curto (e não devolvido fora do cache) para que
+        uma Steam em 429 não leve uma re-tentativa por request.
+        """
+
+        async def buscar() -> dict:
+            try:
+                return await self._client.get_schema(appid, "english")
+            except SteamError:
+                return {}
+
+        return await self._cached(
+            f"schema_en:{appid}",
+            lambda s: SCHEMA_TTL if s else SCHEMA_EN_MISS_TTL,
+            buscar,
         )
 
 

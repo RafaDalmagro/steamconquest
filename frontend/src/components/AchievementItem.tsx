@@ -8,7 +8,21 @@ import type { Achievement } from "@/api/client";
 // devolve o número.
 const RARA_ATE = 10;
 
-export function AchievementItem({ ach }: { ach: Achievement }) {
+// A busca vai em inglês de propósito: guia e vídeo de conquista são escritos em
+// inglês, e o `display_name` que o card mostra é pt-BR — textos diferentes, não
+// traduções ("Descanso no Spa" × "Spa Healer").
+const buscaDeVideo = (jogo: string, nomeEn: string) =>
+  `https://www.youtube.com/results?search_query=${encodeURIComponent(
+    `${jogo} ${nomeEn} achievement`,
+  )}`;
+
+export function AchievementItem({
+  ach,
+  gameName,
+}: {
+  ach: Achievement;
+  gameName: string;
+}) {
   const raridade = ach.global_percent;
 
   return (
@@ -52,6 +66,21 @@ export function AchievementItem({ ach }: { ach: Achievement }) {
           )}
         </span>
         <span className="ml-auto flex flex-none items-center gap-1.5">
+          {/* Só na pendente, e só com nome buscável: sem `name_en` o link
+              buscaria o `apiname` e não acharia nada — link que não acha nada é
+              pior que link nenhum. */}
+          {!ach.achieved && ach.name_en && (
+            <a
+              href={buscaDeVideo(gameName, ach.name_en)}
+              target="_blank"
+              // Sem noopener a página aberta ganha window.opener e pode
+              // redirecionar esta aba. Boundary de segurança, não estilo.
+              rel="noopener noreferrer"
+              className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            >
+              Como conseguir
+            </a>
+          )}
           {raridade != null && raridade < RARA_ATE && (
             <Badge variant="rare">Rara</Badge>
           )}

@@ -25,6 +25,14 @@ type Filter = keyof typeof FILTROS;
 
 const isFilter = (v: string | null): v is Filter => v != null && v in FILTROS;
 
+// Filtro por *tag*, e não por `searchText`: buscar o nome da conquista devolve
+// zero resultado e a Steam cai calada nos guias populares do jogo — o usuário
+// veria "Recommended Keyboard & Mouse Settings" achando que é sobre a conquista.
+// O corpus de guias é por jogo, não por conquista: por isso este link é do jogo
+// e mora aqui, não no card.
+const guiasDaComunidade = (appid: number) =>
+  `https://steamcommunity.com/app/${appid}/guides/?requiredtags%5B%5D=Achievements`;
+
 // Sem data → 0, que é menor que qualquer epoch real e mantém o comparador
 // numérico (Date.parse("") daria NaN, e NaN empata tudo silenciosamente).
 const quando = (ach: Achievement) =>
@@ -93,6 +101,15 @@ export function GameDetail() {
       </h1>
       <p className="mb-2 text-muted-foreground tabular-nums">
         {data.achieved_count} de {data.total_count} conquistas · {percent}%
+        {" · "}
+        <a
+          href={guiasDaComunidade(data.appid)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-4 hover:text-foreground"
+        >
+          Guias da comunidade
+        </a>
       </p>
       <Progress
         value={percent}
@@ -114,7 +131,7 @@ export function GameDetail() {
             ativo monta, então a lista não é renderizada três vezes. */}
         <TabsContent value={filter} className="flex flex-col gap-2">
           {shown.map((ach) => (
-            <AchievementItem key={ach.apiname} ach={ach} />
+            <AchievementItem key={ach.apiname} ach={ach} gameName={data.name} />
           ))}
         </TabsContent>
       </Tabs>

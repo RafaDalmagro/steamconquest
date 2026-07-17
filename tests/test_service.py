@@ -27,6 +27,7 @@ class FakeSteamClient:
         owned_games=None,
         achievements=None,
         schemas=None,
+        schemas_en=None,
         genres=None,
         summary=None,
         global_pct=None,
@@ -37,12 +38,14 @@ class FakeSteamClient:
         self.vanity_calls: list[str] = []
         self._owned = owned_games if owned_games is not None else []  # list | Exception
         self._ach = achievements or {}  # appid -> list[dict] | None
-        self._schemas = schemas or {}  # appid -> dict
+        self._schemas = schemas or {}  # appid -> dict | Exception
+        self._schemas_en = schemas_en or {}  # appid -> dict | Exception
         self._genres = genres or {}  # appid -> list[str] | Exception
         self._summary = summary if summary is not None else {}  # dict | Exception
         self._global = global_pct or {}  # appid -> dict[str, float] | Exception
         self._delay = delay
         self.ach_calls: list[int] = []
+        self.schema_calls: list[tuple[int, str | None]] = []  # (appid, lang)
         self.genre_calls: list[int] = []
         self.global_calls: list[int] = []
         self.owned_calls: list[str] = []  # steamids que buscaram a biblioteca
@@ -83,8 +86,15 @@ class FakeSteamClient:
         finally:
             self._active -= 1
 
-    async def get_schema(self, appid):
-        return self._schemas.get(appid, {})
+    async def get_schema(self, appid, lang=None):
+        # Contrato do client real: `lang=None` significa "o idioma configurado"
+        # (pt-BR). Só o schema do `name_en` pede idioma explícito.
+        self.schema_calls.append((appid, lang))
+        origem = self._schemas_en if lang == "english" else self._schemas
+        val = origem.get(appid, {})
+        if isinstance(val, Exception):
+            raise val
+        return val
 
     async def get_app_genres(self, appid):
         # Contrato do client real: best-effort, sempre lista (nunca levanta).
@@ -306,6 +316,9 @@ async def test_detalhe_reaproveita_as_conquistas_ja_buscadas_pelo_fanout():
     detail = await service.game_detail(STEAMID, 10)
 
     assert client.ach_calls == [10]  # o detalhe não re-consulta a Steam
+    # Nem re-busca a biblioteca só pelo título: o _ensure_library lê o cache que
+    # o list_library já semeou. A única chamada é a do fan-out.
+    assert client.owned_calls == [STEAMID]
     assert detail.achieved_count == 1
 
 
@@ -659,15 +672,16 @@ async def test_detalhe_sem_schema_usa_o_nome_da_biblioteca():
     assert detail.name == "Jogo Sem Schema"
 
 
-async def test_detalhe_sem_schema_e_sem_biblioteca_cai_no_nome_generico():
-    # Acesso direto pela URL: nada em cache e o jogo não publica schema.
+async def test_detalhe_de_jogo_fora_da_biblioteca_cai_no_nome_generico():
+    # Jogo que não consta na biblioteca (delistado/removido) e não publica
+    # schema. O detalhe busca a biblioteca (para o título de loja), não acha o
+    # appid lá, e só então cai no genérico — pior fallback, caso raro.
     client = FakeSteamClient(achievements={77: [{"apiname": "A", "achieved": 1}]}, schemas={})
     service = make_service(client)
 
     detail = await service.game_detail(STEAMID, 77)
 
     assert detail.name == "App 77"
-    assert client.owned_calls == []  # não paga uma chamada à Steam só pelo título
 
 
 async def test_detalhe_de_jogo_sem_stats_nao_quebra():
@@ -794,3 +808,154 @@ async def test_nome_inexistente_e_cacheado_e_nao_queima_a_quota():
     # O "não" também é resposta: marretar o mesmo nome três vezes gasta uma única
     # chamada da chave, não três.
     assert client.vanity_calls == ["nao-existe"]
+
+
+async def test_detalhe_expoe_o_nome_em_ingles_ao_lado_do_nome_traduzido():
+    """AC-090: o card mostra pt-BR; quem busca guia precisa do inglês.
+
+    Os dois nomes convivem porque não são derivável um do outro — a Steam devolve
+    textos diferentes, não traduções ("Descanso no Spa" × "Spa Healer").
+    """
+    client = FakeSteamClient(
+        achievements={485510: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas={
+            485510: {
+                "gameName": "Nioh",
+                "achievements": [{"name": "ACH_SPA", "displayName": "Descanso no Spa"}],
+            }
+        },
+        schemas_en={
+            485510: {
+                "gameName": "Nioh",
+                "achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}],
+            }
+        },
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 485510)
+
+    spa = next(a for a in detail.achievements if a.apiname == "ACH_SPA")
+    assert spa.display_name == "Descanso no Spa"
+    assert spa.name_en == "Spa Healer"
+
+
+async def test_conquista_fora_do_schema_ingles_fica_sem_nome_em_ingles():
+    """AC-091: conquista oculta/nova que o schema inglês não trouxe.
+
+    O `display_name` cai para o `apiname` (comportamento antigo); o `name_en`,
+    não — sem nome buscável, o link não deve existir.
+    """
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 0}, {"apiname": "SECRETA", "achieved": 0}]},
+        schemas={10: {"gameName": "Portal", "achievements": [{"name": "A", "displayName": "Bolo"}]}},
+        schemas_en={10: {"gameName": "Portal", "achievements": [{"name": "A", "displayName": "Cake"}]}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    nomes = {a.apiname: a.name_en for a in detail.achievements}
+    assert nomes == {"A": "Cake", "SECRETA": None}
+    # A ausência é só do inglês: o resto da conquista continua de pé.
+    secreta = next(a for a in detail.achievements if a.apiname == "SECRETA")
+    assert secreta.display_name == "SECRETA"
+
+
+async def test_detalhe_sobrevive_ao_schema_ingles_indisponivel():
+    """AC-092: o nome em inglês é decoração — some da tela, não derruba a tela.
+
+    Mesma regra que a raridade já segue. Só o link "Como conseguir" desaparece;
+    conquista, progresso e raridade continuam servidos.
+    """
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 1}]},
+        schemas={10: {"gameName": "Portal", "achievements": [{"name": "A", "displayName": "Bolo"}]}},
+        schemas_en={10: SteamUnavailableError("boom")},
+        global_pct={10: {"A": 42.7}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert [a.name_en for a in detail.achievements] == [None]
+    assert detail.achievements[0].display_name == "Bolo"
+    assert detail.achievements[0].global_percent == 42.7
+    assert detail.percent == 100.0
+
+
+async def test_jogo_sem_conquistas_nao_paga_a_chamada_do_schema_ingles():
+    """AC-093: sem conquista não há link, e sem link não há o que buscar.
+
+    Irmão do teste da raridade: o branch sem conquistas não paga decoração.
+    """
+    client = FakeSteamClient(
+        achievements={10: None},  # a Steam disse: jogo sem stats
+        schemas={10: {"gameName": "Portal", "achievements": []}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 10)
+
+    assert detail.supports_achievements is False
+    assert ("english" not in [lang for _, lang in client.schema_calls])
+    assert client.schema_calls == [(10, None)]  # só o schema pt-BR, do título
+
+
+async def test_schema_ingles_e_buscado_uma_vez_por_jogo():
+    """AC-094: a chave é por *jogo* — o segundo visitante não paga de novo.
+
+    É o que torna a chamada extra aceitável: ela é amortizada entre todos os
+    jogadores que abrirem o detalhe do mesmo jogo dentro do TTL.
+    """
+    client = FakeSteamClient(
+        achievements={10: [{"apiname": "A", "achieved": 0}]},
+        schemas={10: {"gameName": "Portal", "achievements": [{"name": "A", "displayName": "Bolo"}]}},
+        schemas_en={10: {"gameName": "Portal", "achievements": [{"name": "A", "displayName": "Cake"}]}},
+    )
+    service = make_service(client)
+
+    await service.game_detail(STEAMID, 10)
+    detail = await service.game_detail("76561197960287931", 10)  # outro jogador
+
+    assert client.schema_calls.count((10, "english")) == 1
+    assert detail.achievements[0].name_en == "Cake"
+
+
+async def test_detalhe_busca_o_nome_de_loja_quando_a_biblioteca_esta_fria():
+    """Deep-link ou cache expirado (OWNED_TTL): sem a biblioteca em cache, o
+    detalhe ainda mostra 'Tails of Iron', não 'App 1283410'.
+
+    Importa porque esse nome vai na busca de vídeo — 'App 1283410' como token
+    envenena a query. O `gameName` do schema não salva: vem vazio neste jogo.
+    """
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 1283410, "name": "Tails of Iron", "playtime_forever": 60, "img_icon_url": ""}
+        ],
+        achievements={1283410: [{"apiname": "A", "achieved": 0}]},
+        schemas={1283410: {"gameName": "", "achievements": [{"name": "A", "displayName": "X"}]}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 1283410)  # sem passar pela biblioteca
+
+    assert detail.name == "Tails of Iron"
+
+
+async def test_falha_ao_buscar_o_nome_de_loja_nao_derruba_o_detalhe():
+    """A busca do título é best-effort: 429 na biblioteca degrada o nome para o
+    genérico, mas o detalhe (que já tem conquistas e progresso) continua de pé.
+    """
+    client = FakeSteamClient(
+        owned_games=SteamUnavailableError("boom"),
+        achievements={1283410: [{"apiname": "A", "achieved": 1}]},
+        schemas={1283410: {"gameName": "", "achievements": [{"name": "A", "displayName": "X"}]}},
+    )
+    service = make_service(client)
+
+    detail = await service.game_detail(STEAMID, 1283410)
+
+    assert detail.name == "App 1283410"  # caiu no fallback, mas não levantou
+    assert detail.achieved_count == 1
+    assert detail.percent == 100.0

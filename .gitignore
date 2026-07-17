@@ -11,3 +11,6 @@ frontend/.env
 frontend/.env.local
 .env.bak-pre-align
 
+# artefatos de verificação (Playwright, screenshots de sessão)
+/.playwright-mcp/
+

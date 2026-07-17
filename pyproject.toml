@@ -1,6 +1,6 @@
 [project]
 name = "steam-achievements"
-version = "0.0.2"
+version = "0.0.3"
 description = "App web pessoal para acompanhar conquistas, biblioteca e playtime de uma conta Steam."
 requires-python = ">=3.12"
 dependencies = [

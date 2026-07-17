@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import type { Achievement } from "@/api/client";
 import { useGameDetail } from "@/api/hooks";
@@ -7,9 +6,24 @@ import { AchievementItem } from "@/components/AchievementItem";
 import { Message } from "@/components/Message";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 
-type Filter = "all" | "achieved" | "locked";
+// Record (e não union solta): o TS cobra um rótulo por filtro, e a ordem das
+// chaves é a ordem das abas.
+const FILTROS = {
+  all: "Todas",
+  achieved: "Obtidas",
+  locked: "Pendentes",
+} as const;
+
+type Filter = keyof typeof FILTROS;
+
+const isFilter = (v: string | null): v is Filter => v != null && v in FILTROS;
 
 // Sem data → 0, que é menor que qualquer epoch real e mantém o comparador
 // numérico (Date.parse("") daria NaN, e NaN empata tudo silenciosamente).
@@ -26,11 +40,21 @@ export function GameDetail() {
   const { steamid = "", appid } = useParams();
   const id = Number(appid);
   const { data, isLoading, isError, error } = useGameDetail(steamid, id);
-  const [filter, setFilter] = useState<Filter>("all");
+  // Filtro na URL (e não em useState): é estado de UI compartilhável — o link
+  // para "o que ainda falta neste jogo" tem de sobreviver ao refresh.
+  const [params, setParams] = useSearchParams();
+  const raw = params.get("filter");
+  const filter: Filter = isFilter(raw) ? raw : "all";
+  const setFilter = (f: Filter) =>
+    setParams(f === "all" ? {} : { filter: f }, { replace: true });
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-3">
+      <div
+        className="flex flex-col gap-3"
+        aria-busy="true"
+        aria-label="Carregando conquistas…"
+      >
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-4 w-40" />
         {Array.from({ length: 6 }).map((_, i) => (
@@ -79,17 +103,21 @@ export function GameDetail() {
 
       <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
         <TabsList>
-          <TabsTrigger value="all">Todas</TabsTrigger>
-          <TabsTrigger value="achieved">Obtidas</TabsTrigger>
-          <TabsTrigger value="locked">Pendentes</TabsTrigger>
+          {Object.entries(FILTROS).map(([value, label]) => (
+            <TabsTrigger key={value} value={value}>
+              {label}
+            </TabsTrigger>
+          ))}
         </TabsList>
-      </Tabs>
 
-      <div className="mt-4 flex flex-col gap-2">
-        {shown.map((ach) => (
-          <AchievementItem key={ach.apiname} ach={ach} />
-        ))}
-      </div>
+        {/* Um painel por aba: é o que o aria-controls do trigger aponta. Só o
+            ativo monta, então a lista não é renderizada três vezes. */}
+        <TabsContent value={filter} className="flex flex-col gap-2">
+          {shown.map((ach) => (
+            <AchievementItem key={ach.apiname} ach={ach} />
+          ))}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

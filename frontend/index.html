@@ -7,10 +7,22 @@
     <meta name="theme-color" content="#0D0D14" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- preload as="style" tira o CSS das fontes do caminho crítico: ele baixa em
+         paralelo e é aplicado no onload, sem bloquear o primeiro paint. Não dá
+         para dar preload nos .woff2 direto — as URLs que o Google serve variam
+         por navegador e mudam sem aviso; um href fixo viraria download morto. -->
     <link
+      rel="preload"
+      as="style"
       href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
-      rel="stylesheet"
+      onload="this.rel='stylesheet'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <title>Minhas Conquistas Steam</title>
   </head>
   <body>

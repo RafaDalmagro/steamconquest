@@ -35,6 +35,12 @@ describe("GameCard", () => {
     expect(document.querySelector('img[src*="header.jpg"]')).toBeNull();
   });
 
+  it("formata as horas em pt-BR, igual ao resumo da biblioteca", () => {
+    renderWithProviders(<GameCard steamid="76561197960287930" game={game} />);
+
+    expect(screen.getByText("8,0 h")).toBeInTheDocument();
+  });
+
   it("marca 'Quase lá' o jogo com progresso alto ainda não concluído", () => {
     const quase: Game = {
       ...game,

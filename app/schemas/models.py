@@ -7,9 +7,9 @@ from pydantic import BaseModel
 # assinatura da rota quanto na do service — é o que faz o OpenAPI publicá-lo e o
 # SPA gerar seus tipos daqui, em vez de redeclarar a união à mão.
 #
-# Os dois eixos são ortogonais: `Sort` decide a ordem, `Include` decide o que
-# buscar. Amarrá-los faria a ordenação disparar chamadas à Steam que ninguém pediu.
-Sort = Literal["playtime", "name", "percent", "ach_count", "last_played"]
+# `include` é o único eixo da rota, e é o que decide o que buscar. Ordenar não é:
+# a ordem sai dos campos que já vêm no payload, então quem ordena é o cliente —
+# reordenar não muda o dado e não pode custar uma ida à Steam.
 Include = Literal["achievements", "genres"]
 
 

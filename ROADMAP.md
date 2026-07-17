@@ -165,6 +165,56 @@ outra porta do mesmo tamanho. Blindar uma e deixar a irmã aberta é teatro.
 **Custo de quota:** zero para 17 dígitos ou URL `/profiles/…`; +1 chamada só no
 primeiro vanity de cada nome, depois é cache (positivo ou negativo).
 
+## Conversão da Home (REQ-080/081)
+
+Spec própria: `spec/spec-home-conversao.md`. Público decidido na entrevista de
+16/07/2026: **tráfego morno, product-aware** — quem chega já quer as próprias
+conquistas. Logo a mudança **subtrai** página, ao contrário do reflexo de
+acrescentar: o input é o herói e a prova é o produto.
+
+- [x] **"Como funciona" (`PASSOS`) removido** (REQ-080): explicava um problema que
+      quem chega já tem. O que ali fazia trabalho real era **uma linha** — "nada de
+      senha nem login" —, sepultada no passo 1: respondia à objeção de confiança
+      **depois** do pedido que ela deveria destravar. Subiu para junto do campo,
+      visível sem interação, onde a dúvida de fato acontece.
+- [x] **Título passou de agregação para o loop de completude** (REQ-080): "cada
+      troféu em um lugar" é o que todo tracker promete — arquivo morto. O que puxa
+      é o loop aberto (Zeigarnik), o mesmo mecanismo do "Quase lá". ⚠️ **CON-080**:
+      a promessa só é honesta porque o perfil de exemplo a prova; se o link de demo
+      cair, o título **volta** para agregação.
+- [x] **Perfil de exemplo** (REQ-081): prova antes do pedido, com nome e avatar
+      reais. Só para **visitante novo** (sem `lastSteamId`) — para quem já
+      converteu, o "Continuar como" é a conversão, e a demo seria o único outro
+      link da página, apontando para longe. Não resolve ⇒ **some em silêncio**,
+      como o `ContinuarComo` e a raridade.
+- [x] **Reversão consciente (CON-083)**: a Home passa a fazer **1 chamada** de
+      perfil para o visitante anônimo — o comportamento "zero chamadas sem id
+      salvo" foi **revogado**. Sem buscar o perfil não há como saber que a demo
+      quebrou, e 404 na cara de quem chega agora é pior. Custo: 1 requisição à
+      própria API; `player_summary:{demo}` é chave fixa e compartilhada ⇒ quota
+      Steam no regime ≈ 0. **Três** testes reescritos (não deletados), não um.
+- [x] **`/verify` no app real (16/07/2026)**: a biblioteca do perfil de demo lê
+      `155 jogos · 3.732,0 h · 3 jogos quase 100% · 9 jogos 100%` — a promessa do
+      título provada a um clique, com dado vivo. Visitante recorrente renderiza
+      **só** o "Continuar como". Achado que só o app pegou: sem o `PASSOS`, o herói
+      encostava no topo e sobrava meia tela morta — centrado na vertical.
+
+**Decidido não fazer** (registrado para poder ser cobrado): **prova social** de
+qualquer forma — sem banco, sem analytics e sem usuários a citar, todo número
+seria fabricado, e ser pego inventando "3.000 jogadores" custa exatamente a
+confiança que a página existe para construir; **estrelas do GitHub** (provam que o
+código existe, não que a ferramenta é boa, e miram dev, não o público escolhido);
+**`VITE_DEMO_STEAMID`** (não varia entre deploys nem é segredo — ver CON-081);
+**screenshot no herói** (já rejeitado no projeto; a demo viva substitui);
+**auto-redirect** do recorrente para `/u/{lastSteamId}` (sequestraria quem quer
+consultar outro perfil).
+
+⚠️ **Perfil do Gabe (`76561197960287930`) não serve de demo**: verificado contra a
+API real em 16/07/2026 — `GetPlayerSummaries` devolve o perfil
+(`personaname='Rabscuttle'`), mas `GetOwnedGames` levanta `SteamDataUnavailable`:
+a **biblioteca é privada**. Segue válido como *fixture* de teste, onde o id só
+precisa ser parseado. Registrado para poupar a próxima pessoa da chamada.
+
 ## Dívida / processo
 
 - [x] **Spec reescrita para v2.0.** As seções antigas descreviam o app

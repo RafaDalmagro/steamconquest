@@ -35,6 +35,15 @@ o token se ainda não existir". Portanto:
 
 Não há outra dependência entre os planos.
 
+> ⚠️ **Atualização de 17/07/2026** — o token **já existe no `:root`**, criado fora
+> destes planos pela animação do `<details>` (a gaveta "Não sei meu Steam ID" no
+> `Home.tsx`), que precisou da mesma curva. **Só a metade `:root` existe**: a
+> entrada em `@theme inline` **não** foi adicionada, então a utility
+> `ease-snappy` ainda **não** é gerada. Quem executar 001/002/003 e precisar da
+> *utility* (e não do `var(--ease-snappy)` em CSS puro) tem de acrescentar a
+> entrada no `@theme inline` — o passo 1 "criar o token" vai parecer pronto e
+> não está, para esse uso.
+
 ## Fora de escopo (missed opportunities não convertidas)
 
 Levantadas na auditoria, mas **não** viraram plano (aguardam decisão):

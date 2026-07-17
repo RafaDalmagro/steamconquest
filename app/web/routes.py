@@ -10,7 +10,6 @@ from app.schemas.models import (
     Include,
     PlayerSummary,
     ResolvedProfile,
-    Sort,
 )
 from app.services.achievements import AchievementsService
 from app.errors import (
@@ -57,15 +56,14 @@ async def player_profile(steamid: str = _STEAMID, service=Depends(get_service)):
 @router.get("/users/{steamid}/games", response_model=list[Game])
 async def list_games(
     steamid: str = _STEAMID,
-    sort: Sort = "playtime",
     # Repetível (`?include=achievements&include=genres`): é a forma nativa do
     # FastAPI, que valida o vocabulário e o publica no OpenAPI sem parser à mão.
     include: Annotated[list[Include], Query()] = [],
     service=Depends(get_service),
 ):
-    # Valor fora do vocabulário não chega aqui: os Literal fazem o FastAPI devolver
+    # Valor fora do vocabulário não chega aqui: o Literal faz o FastAPI devolver
     # 422 (com o `detail` em pt-BR do handler abaixo) antes de tocar o serviço.
-    return await service.list_library(steamid, sort=sort, include=include)
+    return await service.list_library(steamid, include=include)
 
 
 @router.get("/users/{steamid}/games/{appid}", response_model=GameDetail)
@@ -95,7 +93,7 @@ def register_error_handlers(app: FastAPI) -> None:
 
     # O 422 padrão do FastAPI traz `detail` como array de erros de validação, que
     # o frontend não sabe exibir. Aqui ele passa a falar o mesmo contrato dos
-    # demais erros — {"detail": "<pt-BR>"} — para steamid, appid, sort e include.
+    # demais erros — {"detail": "<pt-BR>"} — para steamid, appid e include.
     async def handle_validation(request: Request, exc: Exception):
         return JSONResponse(
             {"detail": "Parâmetro inválido na URL. Confira o endereço e tente de novo."},

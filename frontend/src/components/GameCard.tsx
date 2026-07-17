@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { formatarData } from "@/lib/format";
+import { formatarData, formatarHoras } from "@/lib/format";
 import { isQuaseLa } from "@/lib/progress";
 import type { Game } from "@/api/client";
 
@@ -13,18 +13,26 @@ const coverUrl = (appid: number) =>
 
 export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
   const [coverFailed, setCoverFailed] = useState(false);
-  const hours = (game.playtime_minutes / 60).toFixed(1);
+  const hours = formatarHoras(game.playtime_minutes);
   const percent = game.percent != null ? Math.round(game.percent) : null;
   const complete = percent === 100;
 
   return (
-    <Link to={`/u/${steamid}/game/${game.appid}`} className="group block">
-      <Card className="overflow-hidden p-0 transition-all duration-150 group-hover:-translate-y-0.5 group-hover:border-primary group-hover:shadow-[0_0_12px_rgb(247_37_133/0.35)]">
+    // `content-visibility: auto` pula o render do que está fora da viewport —
+    // é a virtualização nativa, sem lib e sem altura fixa. `contain-intrinsic-size`
+    // reserva a altura estimada do card para a barra de rolagem não pular.
+    <Link
+      to={`/u/${steamid}/game/${game.appid}`}
+      className="group block [content-visibility:auto] [contain-intrinsic-size:auto_260px]"
+    >
+      <Card className="overflow-hidden p-0 transition-[transform,border-color,box-shadow] duration-150 group-hover:-translate-y-0.5 group-hover:border-primary group-hover:shadow-[0_0_12px_rgb(247_37_133/0.35)] motion-reduce:group-hover:translate-y-0">
         <div className="relative aspect-[460/215] bg-accent">
           {!coverFailed ? (
             <img
               src={coverUrl(game.appid)}
               alt=""
+              width={460}
+              height={215}
               loading="lazy"
               onError={() => setCoverFailed(true)}
               className="h-full w-full object-cover"
@@ -44,11 +52,14 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
             </div>
           )}
           {game.playtime_2weeks_minutes != null && (
-            <span
-              title={`${(game.playtime_2weeks_minutes / 60).toFixed(1)} h nas últimas 2 semanas`}
-              className="absolute left-1.5 top-1.5 rounded-sm bg-primary px-1.5 py-0.5 font-display text-xs font-semibold text-primary-foreground"
-            >
+            // `title` não chega a teclado nem a toque: as horas vão em texto
+            // acessível, e o selo visual continua só "Recente".
+            <span className="absolute left-1.5 top-1.5 rounded-sm bg-primary px-1.5 py-0.5 font-display text-xs font-semibold text-primary-foreground">
               Recente
+              <span className="sr-only">
+                : {formatarHoras(game.playtime_2weeks_minutes)} h nas últimas 2
+                semanas
+              </span>
             </span>
           )}
           {complete && (
@@ -84,7 +95,12 @@ export function GameCard({ steamid, game }: { steamid: string; game: Game }) {
             </time>
           )}
           {percent != null && (
-            <Progress value={percent} segmented complete={complete} />
+            <Progress
+              value={percent}
+              segmented
+              complete={complete}
+              aria-label={`${percent}% das conquistas de ${game.name}`}
+            />
           )}
         </div>
       </Card>

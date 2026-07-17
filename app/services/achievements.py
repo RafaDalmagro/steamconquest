@@ -16,7 +16,6 @@ from app.schemas.models import (
     GameDetail,
     Include,
     PlayerSummary,
-    Sort,
 )
 
 _ICON_URL = (
@@ -51,9 +50,6 @@ GENRES_MISS_TTL = 3_600
 # cache" (None), sem precisar guardar a exceção.
 _NAO_EXISTE = object()
 
-# Piso de ordenação para "nunca jogado" (ver _sort).
-_NUNCA = datetime.min.replace(tzinfo=UTC)
-
 
 class Progresso(NamedTuple):
     """Uma conquista do jogador, normalizada: `achieved` é bool, não o `0/1` da Steam.
@@ -81,7 +77,6 @@ class AchievementsService:
     async def list_library(
         self,
         steamid: str,
-        sort: Sort = "playtime",
         include: Collection[Include] = (),
     ) -> list[Game]:
         try:
@@ -107,9 +102,8 @@ class AchievementsService:
             )
             for g in raw
         ]
-        # O caller declara os dados caros que quer; a rota não os deduz do `sort`.
-        # Ordenar por % sem pedir conquistas é legal: os campos ficam None e o
-        # comparador os trata como 0 (a lista sai estável, não quebrada).
+        # O caller declara os dados caros que quer — nada aqui os deduz. Sem
+        # `include`, a biblioteca custa uma única chamada à Steam.
         #
         # Os dois fan-outs são independentes e batem em hosts diferentes (Web API ×
         # loja), cada um com seu Semaphore: em paralelo, pedir os dois custa o mais
@@ -121,7 +115,8 @@ class AchievementsService:
             trabalhos.append(self._fill_genres(games))
         if trabalhos:
             await asyncio.gather(*trabalhos)
-        _sort(games, sort)
+        # Sai na ordem que a Steam devolveu: ordenar é trabalho do cliente, que já
+        # tem todos os campos em mãos e não precisa de uma requisição para reordenar.
         return games
 
     async def resolve_vanity(self, nome: str) -> str:
@@ -394,17 +389,3 @@ def _percent(achieved: int, total: int) -> float:
     return achieved / total * 100 if total else 0.0
 
 
-def _sort(games: list[Game], sort: Sort) -> None:
-    if sort == "name":
-        games.sort(key=lambda g: g.name.lower())
-    elif sort == "percent":
-        games.sort(key=lambda g: g.percent or 0, reverse=True)
-    elif sort == "ach_count":
-        games.sort(key=lambda g: g.achieved_count or 0, reverse=True)
-    elif sort == "last_played":
-        # Nunca jogado (None) vai para o fim: com reverse=True, o menor valor
-        # possível é o último. `datetime.min` precisa do tzinfo — os demais são
-        # aware e comparar aware com naive levanta TypeError.
-        games.sort(key=lambda g: g.last_played_at or _NUNCA, reverse=True)
-    else:  # playtime (default)
-        games.sort(key=lambda g: g.playtime_minutes, reverse=True)

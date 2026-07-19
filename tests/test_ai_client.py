@@ -14,14 +14,14 @@ import httpx
 import pytest
 from anthropic import AsyncAnthropic
 
-from app.ai.client import AiClient
-from app.errors import AiRateLimitError
+from app.ai.anthropic_client import AnthropicClient
+from app.errors import AiRateLimitError, AiUnavailableError
 
 
 def make_ai(handler, *, rate_per_minute=600.0, rate_burst=10, model="claude-haiku-4-5"):
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     sdk = AsyncAnthropic(api_key="KEY-DE-TESTE", http_client=http)
-    client = AiClient(
+    client = AnthropicClient(
         sdk,
         model=model,
         rate_per_minute=rate_per_minute,
@@ -216,3 +216,216 @@ async def test_texto_junta_todos_os_blocos():
     assert dica.texto == (
         "Passos práticos:\n\n1. Use a fonte termal.\n2. Espere o terceiro chefe."
     )
+
+
+async def test_busca_web_tem_teto_de_rodadas():
+    """`max_uses` é o multiplicador de custo mais direto que existe aqui.
+
+    Sem teto, o modelo decide quantas buscas fazer, e cada rodada traz mais
+    resultados para dentro do contexto — o /verify mediu 9-10 fontes, ou seja
+    várias rodadas. Limitar corta o custo por dica sem o usuário notar.
+    """
+    corpos = []
+
+    def handler(request):
+        corpos.append(json.loads(request.content))
+        return httpx.Response(200, json=resposta_ok())
+
+    client, http = make_ai(handler)
+    try:
+        await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+    assert corpos[0]["tools"][0]["max_uses"] == 3
+
+
+async def test_rate_limit_do_provedor_vira_excecao_tipada():
+    """REQ-136 — hoje a exceção do SDK **escapa** e vira 500 sem `detail`.
+
+    O teste que existia não pegava isso: o fake levantava `AiUnavailableError`
+    já mapeada, ou seja exercitava um mapeamento que não existe. Aqui o 429 vem
+    da rede, como na vida real.
+    """
+    def handler(request):
+        return httpx.Response(429, json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})
+
+    client, http = make_ai(handler)
+    try:
+        with pytest.raises(AiRateLimitError):
+            await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+
+async def test_falha_generica_do_provedor_vira_excecao_tipada():
+    """AC-137 — 5xx do provedor tem de virar 502 com mensagem, não 500 cru."""
+    def handler(request):
+        return httpx.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "boom"}})
+
+    client, http = make_ai(handler)
+    try:
+        with pytest.raises(AiUnavailableError):
+            await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+
+# --- Gemini (spec-design-provedor-de-ia-plugavel.md) -------------------------
+
+
+def make_gemini(handler, *, rate_per_minute=600.0, rate_burst=10,
+                model="gemini-3.1-flash-lite"):
+    """Mesmo seam da Anthropic: MockTransport injetado no SDK (PAT-130).
+
+    O `google-genai` aceita `httpx_async_client` no `HttpOptions`, então dá para
+    assertar sobre o corpo real que sai pela rede nos dois provedores — que é
+    onde moram os requisitos de custo e de privacidade.
+    """
+    from google.genai import Client, types
+
+    from app.ai.gemini_client import GeminiClient
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sdk = Client(
+        api_key="CHAVE-DE-TESTE",
+        http_options=types.HttpOptions(httpx_async_client=http),
+    )
+    client = GeminiClient(
+        sdk, model=model, rate_per_minute=rate_per_minute, rate_burst=rate_burst
+    )
+    return client, http
+
+
+def resposta_gemini(texto="Use a fonte termal.", fontes=()):
+    return {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": texto}], "role": "model"},
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {"web": {"uri": u, "title": t}} for t, u in fontes
+                    ]
+                },
+            }
+        ]
+    }
+
+
+async def test_gemini_declara_a_busca_do_google():
+    """AC-135 — sem a ferramenta declarada o modelo responde de memória, e a
+    Fonte (que sustenta a conferência) simplesmente não existe.
+    """
+    corpos = []
+
+    def handler(request):
+        corpos.append(json.loads(request.content))
+        return httpx.Response(200, json=resposta_gemini())
+
+    client, http = make_gemini(handler)
+    try:
+        await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+    assert corpos[0]["tools"] == [{"googleSearch": {}}]
+
+
+async def test_gemini_le_texto_e_fontes_do_grounding_sem_repetir():
+    """As fontes vêm de `grounding_metadata`, não de blocos como na Anthropic.
+
+    A dedup é a mesma dos dois lados (mora na base): o guia 100% casa com várias
+    queries e volta repetido em qualquer provedor.
+    """
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=resposta_gemini(
+                texto="Use a fonte termal em Izumo.",
+                fontes=(
+                    ("Nioh 100% Guide", "https://exemplo/guia"),
+                    ("Nioh 100% Guide", "https://exemplo/guia"),
+                    ("Spa Healer — vídeo", "https://exemplo/video"),
+                ),
+            ),
+        )
+
+    client, http = make_gemini(handler)
+    try:
+        dica = await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+    assert dica.texto == "Use a fonte termal em Izumo."
+    assert [(f.title, f.url) for f in dica.fontes] == [
+        ("Nioh 100% Guide", "https://exemplo/guia"),
+        ("Spa Healer — vídeo", "https://exemplo/video"),
+    ]
+
+
+async def test_gemini_sem_grounding_devolve_dica_sem_fontes():
+    """O modelo pode decidir não buscar. Dica sem fonte é pior que com — e muito
+    melhor que derrubar o painel por falta de um campo opcional.
+    """
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "Não encontrei."}],
+                                              "role": "model"}, "finishReason": "STOP"}]},
+        )
+
+    client, http = make_gemini(handler)
+    try:
+        dica = await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+    finally:
+        await http.aclose()
+
+    assert dica.texto == "Não encontrei."
+    assert dica.fontes == []
+
+
+async def test_gemini_traduz_erros_do_sdk():
+    """REQ-136 no outro provedor. Mesmo contrato, exceções de SDK diferentes."""
+    for status, esperada in ((429, AiRateLimitError), (500, AiUnavailableError)):
+        def handler(request, _s=status):
+            return httpx.Response(_s, json={"error": {"code": _s, "message": "x"}})
+
+        client, http = make_gemini(handler)
+        try:
+            with pytest.raises(esperada):
+                await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+        finally:
+            await http.aclose()
+
+
+async def test_o_prompt_e_identico_nos_dois_provedores():
+    """CON-132/AC-140 — o que muda é o transporte, nunca o que se pede.
+
+    É este teste que torna a comparação de qualidade honesta: com prompts
+    afinados por provedor, comparar as sínteses compararia *prompts*, e a
+    conclusão não serviria para decidir qual manter.
+    """
+    prompts = {}
+
+    def handler_anthropic(request):
+        corpo = json.loads(request.content)
+        prompts["anthropic"] = corpo["messages"][0]["content"]
+        return httpx.Response(200, json=resposta_ok())
+
+    def handler_gemini(request):
+        corpo = json.loads(request.content)
+        prompts["gemini"] = corpo["contents"][0]["parts"][0]["text"]
+        return httpx.Response(200, json=resposta_gemini())
+
+    for make, handler in ((make_ai, handler_anthropic), (make_gemini, handler_gemini)):
+        client, http = make(handler)
+        try:
+            await client.sintetizar("Nioh: Complete Edition", "Spa Healer")
+        finally:
+            await http.aclose()
+
+    assert prompts["anthropic"] == prompts["gemini"]
+    # E o prompt carrega os dois insumos, sem nada do jogador (AC-118).
+    assert "Spa Healer" in prompts["gemini"]
+    assert "Nioh: Complete Edition" in prompts["gemini"]

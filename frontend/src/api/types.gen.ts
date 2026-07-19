@@ -145,6 +145,11 @@ export interface components {
             texto: string;
             /** Fontes */
             fontes: components["schemas"]["Fonte"][];
+            /**
+             * Provedor
+             * @default
+             */
+            provedor: string;
         };
         /**
          * Fonte

@@ -7,6 +7,7 @@ from app.errors import (
     AiRateLimitError,
     AiUnavailableError,
     DicaIndisponivel,
+    DicaSemOrcamento,
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
@@ -333,6 +334,7 @@ def test_dica_retorna_texto_e_fontes():
     assert resp.json() == {
         "texto": "Use a fonte termal.",
         "fontes": [{"title": "Nioh 100%", "url": "https://exemplo/guia"}],
+        "provedor": "",
     }
     assert service.dica_recebida == (10, "ACH_SPA")
 
@@ -367,3 +369,15 @@ def test_falha_do_provedor_de_ia_vira_502():
     resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
 
     assert resp.status_code == 502
+
+
+def test_orcamento_esgotado_diz_para_voltar_amanha():
+    """Também 429, mas mensagem própria: "tente em instantes" é verdade para
+    rajada e mentira para orçamento — este só volta amanhã.
+    """
+    client = client_with(FakeService(error=DicaSemOrcamento("acabou")))
+
+    resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
+
+    assert resp.status_code == 429
+    assert "amanhã" in resp.json()["detail"].lower()

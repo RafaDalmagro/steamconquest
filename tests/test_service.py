@@ -4,9 +4,11 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.cache import TTLCache
+from app.core.orcamento import OrcamentoDeIA
 from app.errors import (
     AiUnavailableError,
     DicaIndisponivel,
+    DicaSemOrcamento,
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamUnavailableError,
@@ -122,8 +124,11 @@ class FakeAiClient:
     despercebido: a exceção continuaria sendo levantada, só que depois de pagar.
     """
 
-    def __init__(self, dica=None):
+    def __init__(self, dica=None, nome="anthropic"):
         self._dica = dica  # Dica | Exception
+        # O cliente sabe o próprio nome (REQ-134): assim `services/` monta a
+        # chave de cache sem saber que existe configuração de provedor.
+        self.nome = nome
         self.calls: list[tuple[str, str]] = []  # (nome_do_jogo, name_en)
 
     async def sintetizar(self, nome_do_jogo: str, name_en: str):
@@ -133,8 +138,10 @@ class FakeAiClient:
         return self._dica
 
 
-def make_service(client, concurrency=5, ai=None):
-    return AchievementsService(client, TTLCache(), concurrency, ai=ai)
+def make_service(client, concurrency=5, ai=None, orcamento=None):
+    return AchievementsService(
+        client, TTLCache(), concurrency, ai=ai, orcamento=orcamento
+    )
 
 
 async def test_biblioteca_parseada_na_ordem_que_a_steam_devolveu():
@@ -1150,3 +1157,125 @@ async def test_falha_da_ia_propaga_e_nao_congela_o_painel():
         await service.dica(STEAMID, 10, "ACH_SPA")
 
     assert len(ia.calls) == 2
+
+
+async def test_orcamento_do_dia_esgotado_nao_gasta_mais():
+    """O token bucket limita rajada; ele NÃO limita gasto acumulado.
+
+    A 10/min sustentados o pior caso é ~14 mil chamadas/dia. O orçamento diário
+    é o que transforma "protegido contra pico" em "protegido contra fatura".
+    """
+    ia = FakeAiClient(dica=Dica(texto="Use a fonte termal.", fontes=[]))
+    orcamento = OrcamentoDeIA(por_dia=1, por_dia_do_dono=0)
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={
+            10: [{"apiname": "ACH_A", "achieved": 0}, {"apiname": "ACH_B", "achieved": 0}]
+        },
+        schemas_en={
+            10: {
+                "achievements": [
+                    {"name": "ACH_A", "displayName": "Spa Healer"},
+                    {"name": "ACH_B", "displayName": "Latest Masterpiece"},
+                ]
+            }
+        },
+    )
+    service = make_service(client, ai=ia, orcamento=orcamento)
+
+    await service.dica(STEAMID, 10, "ACH_A")
+
+    with pytest.raises(DicaSemOrcamento):
+        await service.dica(STEAMID, 10, "ACH_B")
+
+    assert len(ia.calls) == 1
+
+
+async def test_visitante_esgotando_o_dia_nao_tranca_o_dono():
+    """Razão de ser das duas cotas: com teto único, um bot esgotando o dia
+    trancaria o dono fora do próprio app. A reserva é isolamento, não regalia —
+    sai do mesmo bolso e entra na soma do pior caso do mês.
+    """
+    dono = "76561198082363621"
+    ia = FakeAiClient(dica=Dica(texto="Use a fonte termal.", fontes=[]))
+    orcamento = OrcamentoDeIA(por_dia=1, por_dia_do_dono=1, dono=dono)
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={
+            10: [
+                {"apiname": "ACH_A", "achieved": 0},
+                {"apiname": "ACH_B", "achieved": 0},
+                {"apiname": "ACH_C", "achieved": 0},
+            ]
+        },
+        schemas_en={
+            10: {
+                "achievements": [
+                    {"name": "ACH_A", "displayName": "Spa Healer"},
+                    {"name": "ACH_B", "displayName": "Latest Masterpiece"},
+                    {"name": "ACH_C", "displayName": "Twilight Walker"},
+                ]
+            }
+        },
+    )
+    service = make_service(client, ai=ia, orcamento=orcamento)
+
+    # Visitante torra a cota global.
+    await service.dica(STEAMID, 10, "ACH_A")
+    with pytest.raises(DicaSemOrcamento):
+        await service.dica(STEAMID, 10, "ACH_B")
+
+    # O dono continua tendo a dele.
+    assert (await service.dica(dono, 10, "ACH_B")).texto == "Use a fonte termal."
+
+    # E ela também acaba — reserva não transborda para a global, senão o pior
+    # caso do mês deixaria de ser a soma anunciada.
+    with pytest.raises(DicaSemOrcamento):
+        await service.dica(dono, 10, "ACH_C")
+
+
+async def test_cache_hit_nao_consome_orcamento():
+    """O teto conta *gasto*, não *acesso*.
+
+    Reler uma dica cacheada é de graça. Se debitar mesmo assim, o orçamento do
+    dia acaba sem ninguém ter pago nada — e o link vira inútil justamente por
+    ser popular.
+    """
+    ia = FakeAiClient(dica=Dica(texto="Use a fonte termal.", fontes=[]))
+    orcamento = OrcamentoDeIA(por_dia=1, por_dia_do_dono=0)
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_A", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_A", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia, orcamento=orcamento)
+
+    for _ in range(5):
+        assert (await service.dica(STEAMID, 10, "ACH_A")).texto == "Use a fonte termal."
+
+    assert len(ia.calls) == 1
+
+
+async def test_trocar_de_provedor_gera_dica_nova():
+    """AC-134 — sem o provedor na chave, trocar não teria efeito no que já está
+    em cache, e a comparação de qualidade viraria comparação de estado de cache:
+    você acharia estar vendo o Gemini e estaria vendo a resposta antiga.
+    """
+    fixture = dict(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_A", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_A", "displayName": "Spa Healer"}]}},
+    )
+    cache = TTLCache()
+
+    um = FakeAiClient(dica=Dica(texto="da anthropic", fontes=[]), nome="anthropic")
+    outro = FakeAiClient(dica=Dica(texto="do gemini", fontes=[]), nome="gemini")
+
+    a = AchievementsService(FakeSteamClient(**fixture), cache, 5, ai=um)
+    b = AchievementsService(FakeSteamClient(**fixture), cache, 5, ai=outro)
+
+    assert (await a.dica(STEAMID, 10, "ACH_A")).texto == "da anthropic"
+    assert (await b.dica(STEAMID, 10, "ACH_A")).texto == "do gemini"
+    # E cada um continua tendo o seu em cache, sem chamar de novo.
+    assert (await a.dica(STEAMID, 10, "ACH_A")).texto == "da anthropic"
+    assert len(um.calls) == 1 and len(outro.calls) == 1

@@ -9,6 +9,7 @@ dependencies = [
     "httpx",
     "pydantic-settings",
     "anthropic>=0.117.0",
+    "google-genai>=2.12.1",
 ]
 
 [dependency-groups]

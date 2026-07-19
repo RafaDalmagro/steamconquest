@@ -2,15 +2,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.ai.client import AiClient
+from app.ai import criar_cliente_de_ia
 from app.config import load_settings
 from app.core.cache import TTLCache
+from app.core.orcamento import OrcamentoDeIA
 from app.services.achievements import AchievementsService
 from app.steam.client import SteamClient
 from app.web.routes import register_error_handlers, router
@@ -38,17 +38,21 @@ async def lifespan(app: FastAPI):
         rate_per_minute=settings.steam_rate_per_minute,
         rate_burst=settings.steam_rate_burst,
     )
-    # Cliente próprio da Anthropic, com o httpx do SDK: a Steam e a IA têm
+    # Cliente próprio do provedor ativo, com o httpx do SDK: a Steam e a IA têm
     # timeouts e regimes de erro diferentes, e compartilhar o pool acoplaria as
     # duas — uma busca web lenta seguraria conexão que a biblioteca precisa.
-    ai = AiClient(
-        AsyncAnthropic(api_key=settings.anthropic_api_key),
-        model=settings.ai_model,
-        rate_per_minute=settings.ai_rate_per_minute,
-        rate_burst=settings.ai_rate_burst,
-    )
+    # Qual provedor é decisão da camada `ai/`; aqui só se compõe.
+    ai = criar_cliente_de_ia(settings)
     app.state.service = AchievementsService(
-        client, TTLCache(), settings.steam_concurrency, ai=ai
+        client,
+        TTLCache(),
+        settings.steam_concurrency,
+        ai=ai,
+        orcamento=OrcamentoDeIA(
+            por_dia=settings.daily_budget,
+            por_dia_do_dono=settings.owner_daily_budget,
+            dono=settings.owner_steamid,
+        ),
     )
     try:
         yield

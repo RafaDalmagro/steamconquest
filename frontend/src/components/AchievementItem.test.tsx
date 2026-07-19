@@ -155,3 +155,30 @@ describe("AchievementItem — honestidade da persona", () => {
     expect(screen.getByText(/pode errar/i)).toBeTruthy();
   });
 });
+
+describe("AchievementItem — provedor", () => {
+  it("nomeia o provedor sem perder o marcador de IA", async () => {
+    // SEC-130 — trocar "modelo de IA" por "Gemini" violaria o SEC-113: quem não
+    // conhece a marca lê "Gemini" como nome próprio, possivelmente o nome do
+    // NPC. O provedor é informação *adicional*, nunca substituta.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          texto: "Use a fonte termal.",
+          fontes: [],
+          provedor: "gemini",
+        }),
+      ),
+    );
+
+    render(pendente);
+    fireEvent.click(screen.getByRole("button", { name: /npc/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Use a fonte termal/)).toBeTruthy(),
+    );
+    expect(screen.getByText(/modelo de IA/i)).toBeTruthy();
+    expect(screen.getByText(/gemini/i)).toBeTruthy();
+  });
+});

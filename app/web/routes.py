@@ -15,6 +15,7 @@ from app.schemas.models import (
 from app.services.achievements import AchievementsService
 from app.errors import (
     AiRateLimitError,
+    DicaSemOrcamento,
     AiUnavailableError,
     DicaIndisponivel,
     SteamDataUnavailable,
@@ -119,6 +120,9 @@ _ERROR_MAP = {
     # diria a quem sonda a API o que há na biblioteca de outra pessoa (SEC-111).
     DicaIndisponivel: (404, "O NPC não tem o que dizer sobre esta conquista."),
     AiRateLimitError: (429, "O NPC está sobrecarregado. Tente de novo em instantes."),
+    # 429 como o de cima, mensagem diferente: "em instantes" é verdade para
+    # rajada e mentira para orçamento — este só volta na virada do dia.
+    DicaSemOrcamento: (429, "O NPC já trabalhou demais hoje. Volte amanhã — o link \u201cComo conseguir\u201d continua valendo."),
     AiUnavailableError: (502, "O NPC não respondeu. Tente mais tarde."),
 }
 

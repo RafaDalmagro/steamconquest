@@ -39,12 +39,20 @@ npm install                                  # instala deps do frontend
 npm run dev                                  # SPA dev (http://localhost:5173, proxy /api)
 npm run build                                # gera frontend/dist (servido pelo FastAPI)
 npm run test                                 # testes do frontend (Vitest)
+npm run typecheck                            # tsc -b — ver aviso abaixo
 npm run generate:api                         # regenera tipos TS do /openapi.json (backend up)
 
 docker compose up --build                    # app completo (ENVIRONMENT=prod) em :8000
 ```
 
 Terminal alvo: Linux nativo (zsh).
+
+⚠️ **Nunca use `tsc --noEmit` neste projeto.** O `tsconfig.json` é só um arquivo
+de *references* com `"files": []`, então `--noEmit` checa **zero arquivos** e
+passa sempre — inclusive com erro de tipo na árvore. Use `npm run typecheck`
+(`tsc -b`), que é o que o `npm run build` e o Dockerfile rodam. Já quebrou um
+deploy: um `string` passado onde se esperava `number` atravessou a sessão inteira
+com "tsc ok" no console.
 
 **Fluxo dev:** suba o backend (`uv run uvicorn …`) e, em outro terminal, o front
 (`npm run dev`). Acesse pelo Vite (5173); ele encaminha `/api` para o 8000.

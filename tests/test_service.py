@@ -1412,3 +1412,29 @@ async def test_falha_de_rate_limit_da_ia_nunca_e_guardada():
             await service.dica(STEAMID, 10, "ACH_SPA")
 
     assert len(ia.calls) == 2  # a segunda tentou de novo, como deve
+
+
+async def test_sucesso_apos_a_falha_expirar_substitui_a_sentinela():
+    """A falha não pode grudar: passado o FALHA_TTL, um fetch bem-sucedido grava
+    o valor com o TTL normal e as leituras seguintes o leem do cache."""
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+        schemas={10: {"gameName": "A", "achievements": [{"name": "x", "displayName": "X"}]}},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61
+    # A Steam voltou: o fake passa a devolver a conquista em vez de levantar.
+    client._ach[10] = [{"apiname": "x", "achieved": 1, "unlocktime": 0}]
+
+    detalhe = await service.game_detail(STEAMID, 10)
+    assert detalhe.achieved_count == 1
+
+    # Terceira leitura: o valor veio do cache, não da Steam (2 chamadas ao todo).
+    await service.game_detail(STEAMID, 10)
+    assert client.ach_calls == [10, 10]

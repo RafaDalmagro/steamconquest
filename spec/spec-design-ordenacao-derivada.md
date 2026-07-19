@@ -93,6 +93,15 @@ seguinte. Assume familiaridade com `frontend/src/pages/Library.tsx`,
   Valor desconhecido em `?ordem=` degrada para o default, sem erro — mesma
   tolerância que `filter` e `sort` já praticam.
 
+- **REQ-164b**: `filter` e `ordem` são **independentes na URL**: alterar um
+  preserva o outro. Isto é requisito e não detalhe porque o `setFilter` atual
+  chama `setParams({ filter: f })`, que **substitui a querystring inteira** —
+  acrescentar `ordem` sem trocar esse ponto por um atualizador combinado faria
+  trocar de aba **apagar a ordenação** escolhida. O `Library.tsx` já resolveu o
+  mesmo problema com a função `update()`; seguir aquele padrão, não inventar outro.
+  A atualização usa `replace: true` (como hoje), para o botão Voltar não virar um
+  desfazer de cliques em aba.
+
 - **REQ-165**: Num jogo em que **nenhuma** conquista tem `global_percent` (a Steam
   devolveu 403 ou não tem stats globais), o controle de ordenação **não é
   renderizado**. Oferecer "Mais raras" onde ordenar não muda nada é um controle que
@@ -185,8 +194,12 @@ export type Sort =
 | `/u/{steamid}` | `sort` | `playtime`, `name`, `percent`, `quase_la`, `ach_count`, `last_played` | `playtime` |
 | `/u/{steamid}` | `group` | `none`, `genre` | `none` |
 | `/u/{steamid}` | `q` | texto livre | vazio |
-| `/u/{steamid}/{appid}` | `filter` | `all`, `achieved`, `pending` | `all` |
+| `/u/{steamid}/{appid}` | `filter` | `all`, `achieved`, `locked` | `all` |
 | `/u/{steamid}/{appid}` | `ordem` | `desbloqueio`, `faceis`, `raras` | `desbloqueio` |
+
+⚠️ O valor da aba "Pendentes" é `locked`, **não** `pending` — é o que está em
+`FILTROS` (`GameDetail.tsx`) e já vive em URLs compartilhadas. Não renomear: o
+ganho seria estético e quebraria todo link salvo.
 
 Só a linha `ordem` é nova. As outras quatro **já existem em produção** e estão aqui
 porque a documentação atual as descreve errado (§7.4).
@@ -216,6 +229,10 @@ porque a documentação atual as descreve errado (§7.4).
   **desaparece** da URL.
 - **AC-165**: Given uma URL com `?ordem=xpto`, When a página carrega, Then a lista
   usa `desbloqueio` e nada quebra.
+- **AC-165b**: Given `?filter=locked&ordem=raras`, When o usuário troca para a aba
+  `Obtidas`, Then a URL fica `?filter=achieved&ordem=raras` — a ordenação
+  **sobrevive** à troca de aba (REQ-164b). Este AC é o que pega a regressão do
+  `setParams` que substitui a querystring inteira.
 - **AC-166**: Given um jogo em que **nenhuma** conquista tem `global_percent`, When
   a página renderiza, Then o controle de ordenação **não** aparece.
 - **AC-167**: Given uma biblioteca com jogos em 100%, 95%, 85% e 30%, When o sort é
@@ -344,9 +361,9 @@ e uma spec que descreve o oposto do código induz a próxima pessoa (ou agente) 
 ### Combinação de filtro e ordem no detalhe
 
 ```
-?filter=pending&ordem=faceis   → "o que eu consigo hoje"
+?filter=locked&ordem=faceis    → "o que eu consigo hoje"
 ?filter=achieved&ordem=raras   → a vitrine
-?filter=pending&ordem=raras    → o troféu difícil que vale caçar
+?filter=locked&ordem=raras     → o troféu difícil que vale caçar
 ?filter=all                    → estado inicial (nenhum parâmetro na URL)
 ```
 

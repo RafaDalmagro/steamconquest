@@ -6,6 +6,7 @@ import pytest
 from app.core.cache import TTLCache
 from app.core.orcamento import OrcamentoDeIA
 from app.errors import (
+    AiRateLimitError,
     AiUnavailableError,
     DicaIndisponivel,
     DicaSemOrcamento,
@@ -1367,3 +1368,47 @@ async def test_falha_em_chave_de_ttl_longo_expira_pelo_ttl_da_falha():
     # (10, None) é o schema pt-BR; (10, "english") é o schema_en, que engole a
     # falha dentro do próprio buscar() e não interessa aqui (CON-145).
     assert [c for c in client.schema_calls if c == (10, None)] == [(10, None), (10, None)]
+
+
+async def test_falha_permanente_nao_e_guardada():
+    """401/403 não passam pelo backoff — o `_get()` levanta na hora, então não há
+    espera a economizar. Guardar só faria o app demorar até 60s para perceber que
+    um perfil acabou de virar público."""
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamDataUnavailable("acesso negado")},
+        summary={"personaname": "Fulano"},
+    )
+    service = make_service(client)
+
+    for _ in range(2):
+        with pytest.raises(SteamDataUnavailable):
+            await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10, 10]  # nada foi guardado
+
+
+async def test_falha_de_rate_limit_da_ia_nunca_e_guardada():
+    """Irmão de `test_falha_da_ia_propaga_e_nao_congela_o_painel`, não duplicata:
+    aquele cobre `AiUnavailableError`, este cobre `AiRateLimitError` — e é este o
+    tipo que o CON-141 singulariza.
+
+    `AiRateLimitError` também é levantado pelo token bucket local, que se recupera
+    por refill em ~30s. Guardá-lo por FALHA_TTL prolongaria para 60s um bloqueio
+    que se resolveria sozinho — piorando exatamente o caso que a guarda diz
+    melhorar, e na única feature paga do app. Sem este teste, incluí-lo no
+    conjunto passaria com a suíte verde.
+    """
+    ia = FakeAiClient(dica=AiRateLimitError("teto local de chamadas pagas atingido"))
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    for _ in range(2):
+        with pytest.raises(AiRateLimitError):
+            await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert len(ia.calls) == 2  # a segunda tentou de novo, como deve

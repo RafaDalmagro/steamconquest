@@ -136,7 +136,9 @@ export function GameDetail() {
               ach={ach}
               gameName={data.name}
               steamid={steamid}
-              appid={appid}
+              // `data.appid` e não o `appid` do useParams: aquele é string.
+              // Mesma fonte que o link de guias acima usa.
+              appid={data.appid}
             />
           ))}
         </TabsContent>

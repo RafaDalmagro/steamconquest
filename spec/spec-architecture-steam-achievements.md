@@ -269,6 +269,13 @@ a correção é rate limit por IP **na frente de tudo**.
 | `genres:{appid}` | 604800s | 3600s | jogo |
 | `vanity:{nome}` | 300s | 60s (nome inexistente) | nome do perfil (REQ-061) |
 
+Transversal à tabela: **falha transitória** da Steam em qualquer chave servida
+pelo `_cached()` é guardada por **60s** (`FALHA_TTL`) e relida como exceção, não
+como valor (CON-011b). Não é linha da tabela porque não se aplica a uma chave e
+sim à *natureza do resultado* — e é independente do TTL do valor daquela chave:
+uma indisponibilidade de 30s não pode ficar guardada por 24h em `schema:` nem por
+7 dias em `genres:`.
+
 - **CON-010c**: `vanity:{nome}` é **case-sensitive**, embora a Steam trate o nome
   como case-insensitive: `Rafa` e `rafa` viram duas entradas apontando para o mesmo
   steamid. É desperdício de entrada, não bug — e o teto (`_MAXSIZE`, REQ-054) já
@@ -304,6 +311,14 @@ a correção é rate limit por IP **na frente de tudo**.
     contrário de um appid, que é imutável;
   - gênero/raridade **vazios** ⇒ TTL curto (o vazio pode ser um 429 transitório, e
     não ausência real — não merece 24h/7d de cache).
+- **CON-011b**: **Falha transitória da Steam** (5xx/429, após esgotar o retry) é
+  guardada como *falha* e re-levantada como exceção, com TTL próprio de 60 s
+  (`FALHA_TTL`), **nunca** convertida em valor. É a extensão do CON-011 para o caso
+  em que não há resposta nenhuma a cachear: sem ela, um jogo em 5xx consistente faz
+  toda carga da biblioteca re-pagar os 3,5 s de backoff do client. Converter a
+  falha em valor seria pior que não cachear — `[]` já significa "jogo sem
+  conquistas", e o detalhe passaria a afirmar isso sobre um jogo que só está fora
+  do ar. Especificado em `spec/spec-design-cache-negativo-falha-transitoria.md`.
 - **CON-012**: TTL curto para dado do jogador (muda), TTL longo para dado do jogo
   (não muda). Valores configuráveis.
 

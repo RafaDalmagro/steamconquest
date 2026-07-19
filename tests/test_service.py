@@ -6,6 +6,7 @@ import pytest
 from app.core.cache import TTLCache
 from app.core.orcamento import OrcamentoDeIA
 from app.errors import (
+    AiRateLimitError,
     AiUnavailableError,
     DicaIndisponivel,
     DicaSemOrcamento,
@@ -1279,3 +1280,213 @@ async def test_trocar_de_provedor_gera_dica_nova():
     # E cada um continua tendo o seu em cache, sem chamar de novo.
     assert (await a.dica(STEAMID, 10, "ACH_A")).texto == "da anthropic"
     assert len(um.calls) == 1 and len(outro.calls) == 1
+
+
+async def test_falha_transitoria_da_steam_nao_e_re_buscada_dentro_da_janela():
+    """Um jogo quebrado não pode custar o backoff em toda requisição.
+
+    Medido no app real: o GetPlayerAchievements do appid 1966720 devolve 5xx de
+    forma consistente, o client retenta 4× (3,5s dormindo) e a biblioteca inteira
+    espera. Sem guardar a falha, esse custo se repete a cada request.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = make_service(client)
+
+    for _ in range(2):
+        with pytest.raises(SteamUnavailableError):
+            await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10]  # a segunda leitura veio do cache, não da Steam
+
+
+async def test_falha_guardada_volta_como_excecao_nova_e_nao_como_valor():
+    """A sentinela nunca chega ao chamador, e o re-levantamento não reusa a
+    instância guardada — ela vive até 60s no cache, e `raise` da mesma instância
+    encadeia traceback a cada leitura."""
+    erro = SteamUnavailableError("Steam indisponível")
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: erro},
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+    with pytest.raises(SteamUnavailableError) as segunda:
+        await service.game_detail(STEAMID, 10)
+
+    assert segunda.value is not erro  # instância nova (REQ-141)
+    assert str(segunda.value) == "Steam indisponível"
+
+
+async def test_falha_guardada_expira_e_a_steam_volta_a_ser_consultada():
+    """60s é curto de propósito: uma indisponibilidade que terminou não pode
+    ficar visível. O relógio é injetado — nada de sleep na suíte."""
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61  # passou do FALHA_TTL
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10, 10]
+
+
+async def test_falha_em_chave_de_ttl_longo_expira_pelo_ttl_da_falha():
+    """`schema:{appid}` vale 24h. A *falha* nele vale 60s.
+
+    Se a sentinela herdasse o TTL do valor, uma Steam que voltou ao ar em cinco
+    minutos ficaria marcada como quebrada por um dia — e em `genres:`, por sete.
+    """
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: [{"apiname": "x", "achieved": 1, "unlocktime": 0}]},
+        schemas={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    # (10, None) é o schema pt-BR; (10, "english") é o schema_en, que engole a
+    # falha dentro do próprio buscar() e não interessa aqui (CON-145).
+    assert [c for c in client.schema_calls if c == (10, None)] == [(10, None), (10, None)]
+
+
+async def test_falha_permanente_nao_e_guardada():
+    """401/403 não passam pelo backoff — o `_get()` levanta na hora, então não há
+    espera a economizar. Guardar só faria o app demorar até 60s para perceber que
+    um perfil acabou de virar público."""
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamDataUnavailable("acesso negado")},
+        summary={"personaname": "Fulano"},
+    )
+    service = make_service(client)
+
+    for _ in range(2):
+        with pytest.raises(SteamDataUnavailable):
+            await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10, 10]  # nada foi guardado
+
+
+async def test_falha_de_rate_limit_da_ia_nunca_e_guardada():
+    """Irmão de `test_falha_da_ia_propaga_e_nao_congela_o_painel`, não duplicata:
+    aquele cobre `AiUnavailableError`, este cobre `AiRateLimitError` — e é este o
+    tipo que o CON-141 singulariza.
+
+    `AiRateLimitError` também é levantado pelo token bucket local, que se recupera
+    por refill em ~30s. Guardá-lo por FALHA_TTL prolongaria para 60s um bloqueio
+    que se resolveria sozinho — piorando exatamente o caso que a guarda diz
+    melhorar, e na única feature paga do app. Sem este teste, incluí-lo no
+    conjunto passaria com a suíte verde.
+    """
+    ia = FakeAiClient(dica=AiRateLimitError("teto local de chamadas pagas atingido"))
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    for _ in range(2):
+        with pytest.raises(AiRateLimitError):
+            await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert len(ia.calls) == 2  # a segunda tentou de novo, como deve
+
+
+async def test_sucesso_apos_a_falha_expirar_substitui_a_sentinela():
+    """A falha não pode grudar: passado o FALHA_TTL, um fetch bem-sucedido grava
+    o valor com o TTL normal e as leituras seguintes o leem do cache."""
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+        schemas={10: {"gameName": "A", "achievements": [{"name": "x", "displayName": "X"}]}},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61
+    # A Steam voltou: o fake passa a devolver a conquista em vez de levantar.
+    client._ach[10] = [{"apiname": "x", "achieved": 1, "unlocktime": 0}]
+
+    detalhe = await service.game_detail(STEAMID, 10)
+    assert detalhe.achieved_count == 1
+
+    # Terceira leitura: o valor veio do cache, não da Steam (2 chamadas ao todo).
+    await service.game_detail(STEAMID, 10)
+    assert client.ach_calls == [10, 10]
+
+
+async def test_detalhe_de_jogo_em_falha_nao_vira_jogo_sem_conquistas():
+    """O invariante mais caro desta feature.
+
+    `[]` já significa "jogo sem conquistas" em `player_ach:` (CON-011). Se a falha
+    fosse guardada como `[]`, o detalhe de um jogo momentaneamente fora do ar
+    responderia 200 afirmando que ele não tem conquistas — e cacharia a mentira
+    por ACH_TTL. A falha volta como exceção justamente para isso.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+    # Segunda leitura, agora servida pela sentinela: mesmo resultado.
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+
+async def test_biblioteca_com_jogo_quebrado_nao_reconsulta_a_steam_na_segunda_carga():
+    """O caso medido: 155 jogos, um deles em 5xx consistente.
+
+    Na segunda carga nenhuma chamada de conquistas é feita — nem para os jogos
+    que deram certo (cache normal) nem para o quebrado (sentinela). É a diferença
+    entre 4,7s e ~0,1s. O jogo quebrado segue sem %, best-effort como sempre.
+    """
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "Bom", "playtime_forever": 1, "img_icon_url": "a"},
+            {"appid": 20, "name": "Quebrado", "playtime_forever": 1, "img_icon_url": "b"},
+        ],
+        achievements={
+            10: [{"apiname": "x", "achieved": 1, "unlocktime": 0}],
+            20: SteamUnavailableError("Steam indisponível"),
+        },
+    )
+    service = make_service(client)
+
+    await service.list_library(STEAMID, include=["achievements"])
+    chamadas_da_primeira_carga = len(client.ach_calls)
+
+    jogos = await service.list_library(STEAMID, include=["achievements"])
+
+    assert len(client.ach_calls) == chamadas_da_primeira_carga  # segunda carga: zero
+    quebrado = next(j for j in jogos if j.appid == 20)
+    assert quebrado.percent is None  # best-effort preservado (CON-144)
+    bom = next(j for j in jogos if j.appid == 10)
+    assert bom.percent == 100.0

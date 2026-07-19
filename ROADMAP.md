@@ -101,7 +101,7 @@ antes de implementar — feito.
 
 ## Correções pendentes
 
-- [ ] **Um jogo quebrado custa ~4,5s em toda carga da biblioteca** (achado pelo
+- [x] **Um jogo quebrado custa ~4,5s em toda carga da biblioteca** (achado pelo
       `/verify` da revisão de arquitetura, jul/2026). O `GetPlayerAchievements` do
       **appid 1966720 (Lethal Company)** devolve 5xx de forma consistente. O client
       retenta 4× com backoff exponencial (0,5 + 1 + 2 = **3,5s dormindo**) e só
@@ -115,6 +115,32 @@ antes de implementar — feito.
       re-pague o backoff neste load". Deixaria a carga quente em ~0,1s.
       Pré-existente: o antigo `_ach_counts` também não cacheava falha. Precisa de
       ciclo SDD próprio (muda CON-011 e a tabela de TTLs).
+      **Entregue** (19/07/2026, spec
+      `spec/spec-design-cache-negativo-falha-transitoria.md`). A guarda vive no
+      `_cached()` **compartilhado**, não em `_player_achievements`: assim vale de
+      graça para `owned_games` e `schema`, e o próximo chamador não nasce quebrado
+      por omissão. A falha vira sentinela com TTL **próprio** de 60s (`FALHA_TTL`)
+      e volta como exceção **nova** — não como valor, porque `[]` já significa
+      "jogo sem conquistas" e o detalhe passaria a afirmar isso sobre um jogo que
+      só está fora do ar.
+      Dois achados que só apareceram fazendo:
+      (1) a spec v1.0 mandava guardar as falhas de IA alegando que eram
+      retentadas — **não são** (a camada `ai/` só tem token bucket, sem backoff), e
+      guardar `AiRateLimitError` *prolongaria* um bloqueio que o bucket resolve em
+      ~30s. Corrigido na v1.1 e travado por teste + verificação por mutação;
+      (2) `_name()` lê o cache **direto**, sem passar pelo helper, e recebia a
+      sentinela — que é `NamedTuple`, logo truthy e iterável, então o `or []` não
+      protegia. Pego por **teste pré-existente**
+      (`test_falha_ao_buscar_o_nome_de_loja_nao_derruba_o_detalhe`), não por teste
+      novo. Registrado no CON-142 e no `CLAUDE.md`.
+      Latência medida no `/verify` de 19/07/2026, biblioteca de 155 jogos com o
+      1966720 presente: carga quente de **4,7s → 0,006–0,068s**. O detalhe do jogo
+      quebrado devolve **502 em 0,003s** (não 200 com `supports_achievements:false`
+      — AC-145 vale no app real, não só no teste).
+      A prova de que o ganho é da guarda, e não do cache que já existia: esperar os
+      60s do `FALHA_TTL` e repetir devolve **502 em 5,33s** (o backoff de verdade);
+      a chamada seguinte volta a **0,003s**. Três ordens de grandeza, ligadas e
+      desligadas pelo TTL da sentinela.
 
 ## Identificação do perfil (REQ-060 a REQ-062)
 

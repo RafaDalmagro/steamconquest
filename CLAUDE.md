@@ -161,11 +161,24 @@ o catálogo global, não a conta).
   `dica:{provedor}:{appid}:{apiname}`). É
   volátil e por processo; **não**
   introduzir banco para "guardar histórico" sem aprovação explícita.
-- Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga,
-  nada é guardado); `_cached_ou_ausente()` quando o **"não existe" é uma resposta**
+- Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga);
+  `_cached_ou_ausente()` quando o **"não existe" é uma resposta**
   e precisa virar valor no cache. O segundo vale para o que é chaveado por **input
   público** (`player_summary:{steamid}`, `vanity:{nome}`): sem cachear o "não",
   marretar o mesmo ID/nome inexistente queima a quota da chave a cada tentativa.
+- O `_cached()` guarda **falha transitória** (`SteamUnavailableError`,
+  `SteamRateLimitError`) por `FALHA_TTL` = 60s, re-levantando-a como exceção
+  **nova** — nunca como valor, e nunca a instância guardada (traceback acumula).
+  Sem isso, um jogo em 5xx consistente faz toda carga da biblioteca re-pagar 3,5s
+  de backoff. O critério de inclusão não é "é transitória?", é **"o fetch paga
+  retry com backoff?"** — hoje, "passa por `SteamClient._get()`". Nenhuma exceção
+  de `ai/` entra: aquela camada não retenta, e o `AiRateLimitError` também vem do
+  token bucket local, que se recupera por refill — guardá-lo prolongaria o
+  bloqueio na única feature paga. Travado por teste; verificado por mutação.
+- ⚠️ Quem lê `self._cache` **direto**, sem passar pelo `_cached()`, precisa checar
+  o tipo do que recebeu: a sentinela de falha é um `NamedTuple`, logo *truthy* e
+  *iterável*, e um `or []` não a filtra. Hoje há **um** ponto assim (`_name()`), e
+  ele já checa. Ao criar o segundo, checar também — ou ler pelo helper.
 - `player_ach:{steamid}:{appid}` é a **única** porta para `GetPlayerAchievements`:
   a contagem da biblioteca e a lista do detalhe leem a mesma entrada. Guarda uma
   `Progresso` (`apiname`/`achieved`/`unlocktime`) por conquista — nada além disso.

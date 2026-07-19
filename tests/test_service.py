@@ -1438,3 +1438,55 @@ async def test_sucesso_apos_a_falha_expirar_substitui_a_sentinela():
     # Terceira leitura: o valor veio do cache, não da Steam (2 chamadas ao todo).
     await service.game_detail(STEAMID, 10)
     assert client.ach_calls == [10, 10]
+
+
+async def test_detalhe_de_jogo_em_falha_nao_vira_jogo_sem_conquistas():
+    """O invariante mais caro desta feature.
+
+    `[]` já significa "jogo sem conquistas" em `player_ach:` (CON-011). Se a falha
+    fosse guardada como `[]`, o detalhe de um jogo momentaneamente fora do ar
+    responderia 200 afirmando que ele não tem conquistas — e cacharia a mentira
+    por ACH_TTL. A falha volta como exceção justamente para isso.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+    # Segunda leitura, agora servida pela sentinela: mesmo resultado.
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+
+async def test_biblioteca_com_jogo_quebrado_nao_reconsulta_a_steam_na_segunda_carga():
+    """O caso medido: 155 jogos, um deles em 5xx consistente.
+
+    Na segunda carga nenhuma chamada de conquistas é feita — nem para os jogos
+    que deram certo (cache normal) nem para o quebrado (sentinela). É a diferença
+    entre 4,7s e ~0,1s. O jogo quebrado segue sem %, best-effort como sempre.
+    """
+    client = FakeSteamClient(
+        owned_games=[
+            {"appid": 10, "name": "Bom", "playtime_forever": 1, "img_icon_url": "a"},
+            {"appid": 20, "name": "Quebrado", "playtime_forever": 1, "img_icon_url": "b"},
+        ],
+        achievements={
+            10: [{"apiname": "x", "achieved": 1, "unlocktime": 0}],
+            20: SteamUnavailableError("Steam indisponível"),
+        },
+    )
+    service = make_service(client)
+
+    await service.list_library(STEAMID, include=["achievements"])
+    chamadas_da_primeira_carga = len(client.ach_calls)
+
+    jogos = await service.list_library(STEAMID, include=["achievements"])
+
+    assert len(client.ach_calls) == chamadas_da_primeira_carga  # segunda carga: zero
+    quebrado = next(j for j in jogos if j.appid == 20)
+    assert quebrado.percent is None  # best-effort preservado (CON-144)
+    bom = next(j for j in jogos if j.appid == 10)
+    assert bom.percent == 100.0

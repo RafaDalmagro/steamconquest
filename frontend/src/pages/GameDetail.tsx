@@ -4,6 +4,7 @@ import type { Achievement } from "@/api/client";
 import { useGameDetail } from "@/api/hooks";
 import { AchievementItem } from "@/components/AchievementItem";
 import { Message } from "@/components/Message";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -57,6 +58,27 @@ const quando = (ach: Achievement) =>
 // pendentes e sem-data mantêm a ordem do schema sem precisar de critério extra.
 const porDesbloqueio = (a: Achievement, b: Achievement) =>
   Number(b.achieved) - Number(a.achieved) || quando(b) - quando(a);
+
+// `null` (a Steam não devolveu raridade) vai sempre para o fim, nos dois
+// sentidos — nunca para o topo de "raras". Tratá-lo como 0 afirmaria que a
+// conquista sem dado é a mais rara do jogo: falso, e apresentado como resultado
+// de ordenação.
+const porRaridade = (dir: 1 | -1) => (a: Achievement, b: Achievement) => {
+  const x = a.global_percent;
+  const y = b.global_percent;
+  if (x == null) return y == null ? 0 : 1;
+  if (y == null) return -1;
+  return (x - y) * dir;
+};
+
+const COMPARADORES: Record<
+  OrdemAch,
+  (a: Achievement, b: Achievement) => number
+> = {
+  desbloqueio: porDesbloqueio,
+  faceis: porRaridade(-1), // maior % de jogadores primeiro
+  raras: porRaridade(1), // menor % primeiro
+};
 
 export function GameDetail() {
   const { steamid = "", appid } = useParams();
@@ -118,7 +140,7 @@ export function GameDetail() {
     .filter((a) =>
       filter === "all" ? true : filter === "achieved" ? a.achieved : !a.achieved,
     )
-    .sort(porDesbloqueio);
+    .sort(COMPARADORES[ordem]);
   const percent = Math.round(data.percent);
 
   return (
@@ -144,6 +166,29 @@ export function GameDetail() {
         complete={percent === 100}
         className="mb-6"
       />
+
+      {/* Some quando ordenar não mudaria nada: jogo sem stats globais na Steam
+          renderiza sem raridade, e um controle que não faz nada é um controle
+          que mente. Mesma postura do selo "Rara" e do "Continuar como". */}
+      {data.achievements.some((a) => a.global_percent != null) && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="font-display text-xs uppercase tracking-widest text-muted-foreground">
+            Ordenar:
+          </span>
+          {Object.entries(ORDENS).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={ordem === value ? "active" : "default"}
+              aria-pressed={ordem === value}
+              onClick={() => update({ ordem: value as OrdemAch })}
+              className="font-display text-xs uppercase tracking-wide"
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
 
       <Tabs value={filter} onValueChange={(v) => update({ filter: v as Filter })}>
         <TabsList>

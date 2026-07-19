@@ -32,6 +32,42 @@ const detailComConquistas = {
   ],
 };
 
+// Todas pendentes de propósito: `porDesbloqueio` empataria entre elas, então a
+// ordem observada é a da raridade e de mais nada.
+const comRaridade = (
+  display_name: string,
+  global_percent: number | null,
+) => ({
+  apiname: display_name,
+  display_name,
+  description: null,
+  icon_url: null,
+  achieved: false,
+  global_percent,
+});
+
+const detailComRaridade = {
+  ...detailComConquistas,
+  achieved_count: 0,
+  total_count: 3,
+  percent: 0,
+  // Nomeadas pelo percentil, e não "Rara"/"Comum": o AchievementItem renderiza
+  // um badge com o texto "Rara" abaixo de 10%, e uma conquista com esse nome
+  // faria as buscas por texto acharem dois elementos.
+  achievements: [
+    comRaridade("Dois", 2),
+    comRaridade("Cinquenta", 50),
+    comRaridade("Noventa", 90),
+  ],
+};
+
+// O display_name mora num <strong> sem role própria; escopar ao tabpanel evita
+// pegar texto de fora da lista.
+const nomesNaLista = () =>
+  Array.from(screen.getByRole("tabpanel").querySelectorAll("strong")).map(
+    (s) => s.textContent,
+  );
+
 describe("GameDetail", () => {
   it("mostra erro e não chama a API quando o steamid da URL é inválido", async () => {
     const fetchSpy = vi.fn();
@@ -365,5 +401,105 @@ describe("GameDetail", () => {
 
     expect(url.atual.search).toContain("filter=achieved");
     expect(url.atual.search).toContain("ordem=raras");
+  });
+
+  it("ordena da mais comum para a mais rara em \"mais fáceis\"", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(detailComRaridade)));
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+    await screen.findByText("Dois");
+
+    await userEvent.click(screen.getByRole("button", { name: "Mais fáceis" }));
+
+    expect(nomesNaLista()).toEqual(["Noventa", "Cinquenta", "Dois"]);
+  });
+
+  it("ordena da mais rara para a mais comum em \"mais raras\"", async () => {
+    // Não é duplicata do anterior: porRaridade(1) e porRaridade(-1) são caminhos
+    // distintos, e um sinal trocado passaria com só um deles coberto.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(detailComRaridade)));
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+    await screen.findByText("Dois");
+
+    await userEvent.click(screen.getByRole("button", { name: "Mais raras" }));
+
+    expect(nomesNaLista()).toEqual(["Dois", "Cinquenta", "Noventa"]);
+  });
+
+  it("manda as conquistas sem raridade para o fim, nos dois sentidos", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComRaridade,
+          total_count: 4,
+          achievements: [
+            comRaridade("Doze", 12),
+            comRaridade("SemA", null),
+            comRaridade("Tres", 3),
+            comRaridade("SemB", null),
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+    await screen.findByText("Doze");
+
+    await userEvent.click(screen.getByRole("button", { name: "Mais raras" }));
+    // As sem raridade nunca sobem, e mantêm entre si a ordem de entrada.
+    expect(nomesNaLista()).toEqual(["Tres", "Doze", "SemA", "SemB"]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Mais fáceis" }));
+    expect(nomesNaLista()).toEqual(["Doze", "Tres", "SemA", "SemB"]);
+  });
+
+  it("combina o filtro de aba com a ordenação", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComRaridade,
+          achieved_count: 1,
+          total_count: 3,
+          achievements: [
+            { ...comRaridade("PendRara", 5) },
+            { ...comRaridade("Obtida", 50), achieved: true },
+            { ...comRaridade("PendFacil", 80) },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+    await screen.findByText("PendRara");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Pendentes" }));
+    await userEvent.click(screen.getByRole("button", { name: "Mais fáceis" }));
+
+    // Filtro e ordem se combinam: nenhum sobrescreve o outro.
+    expect(nomesNaLista()).toEqual(["PendFacil", "PendRara"]);
+  });
+
+  it("não mostra o controle de ordenação em jogo sem raridade nenhuma", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...detailComRaridade,
+          total_count: 1,
+          achievements: [comRaridade("Uma", null)],
+        }),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930/game/10");
+    await screen.findByText("Uma");
+
+    // Ordenar não mudaria nada aqui — o controle some em vez de mentir.
+    expect(
+      screen.queryByRole("button", { name: "Mais raras" }),
+    ).not.toBeInTheDocument();
   });
 });

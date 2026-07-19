@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildApiUrl, fetchGames, includesFor } from "./client";
+import { buildApiUrl, fetchDica, fetchGames, includesFor } from "./client";
 import { jsonResponse } from "@/test/utils";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -61,5 +61,20 @@ describe("buildApiUrl", () => {
 
 	it("mantém o fallback local em /api", () => {
 		expect(buildApiUrl("/users/123/games")).toBe("/api/users/123/games");
+	});
+});
+
+describe("fetchDica", () => {
+	it("codifica o apiname na URL", async () => {
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(jsonResponse({ texto: "ok", fontes: [] }));
+
+		await fetchDica("76561197960287930", 10, "ACH_SPA");
+
+		expect(fetchSpy).toHaveBeenCalledWith(
+			"/api/users/76561197960287930/games/10/achievements/ACH_SPA/dica",
+		);
+		fetchSpy.mockRestore();
 	});
 });

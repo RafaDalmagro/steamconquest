@@ -131,7 +131,13 @@ export function GameDetail() {
             ativo monta, então a lista não é renderizada três vezes. */}
         <TabsContent value={filter} className="flex flex-col gap-2">
           {shown.map((ach) => (
-            <AchievementItem key={ach.apiname} ach={ach} gameName={data.name} />
+            <AchievementItem
+              key={ach.apiname}
+              ach={ach}
+              gameName={data.name}
+              steamid={steamid}
+              appid={appid}
+            />
           ))}
         </TabsContent>
       </Tabs>

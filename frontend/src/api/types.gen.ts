@@ -79,6 +79,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/users/{steamid}/games/{appid}/achievements/{apiname}/dica": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dica
+         * @description Síntese de IA de como obter uma conquista pendente.
+         *
+         *     Único endpoint do app com custo em **dinheiro** por miss. O gate (jogo na
+         *     biblioteca + conquista pendente) e o teto de chamadas vivem no serviço; aqui
+         *     só se valida a forma do input e se orquestra.
+         */
+        get: operations["dica_api_users__steamid__games__appid__achievements__apiname__dica_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -104,6 +128,37 @@ export interface components {
             unlocked_at?: string | null;
             /** Global Percent */
             global_percent?: number | null;
+        };
+        /**
+         * Dica
+         * @description Síntese de IA sobre como obter *uma* conquista pendente.
+         *
+         *     Não confundir com "guia": guia é o documento da comunidade Steam, por jogo
+         *     (ver CONTEXT.md). A Dica é por conquista, e é gerada.
+         *
+         *     Função de (jogo, conquista) e de mais nada — nenhum dado do jogador entra
+         *     nela. É o que permite a chave de cache `dica:{appid}:{apiname}` ser
+         *     compartilhada entre visitantes em vez de multiplicar custo por pessoa.
+         */
+        Dica: {
+            /** Texto */
+            texto: string;
+            /** Fontes */
+            fontes: components["schemas"]["Fonte"][];
+        };
+        /**
+         * Fonte
+         * @description URL citada pela busca web, exibida junto da Dica.
+         *
+         *     Existe para o usuário *conferir* a síntese contra o material original — é o
+         *     que separa "a IA resumiu um guia" de "a IA afirmou algo". Sem fonte, uma
+         *     alucinação e um fato têm exatamente a mesma aparência na tela.
+         */
+        Fonte: {
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
         };
         /**
          * Game
@@ -325,6 +380,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GameDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dica_api_users__steamid__games__appid__achievements__apiname__dica_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appid: number;
+                apiname: string;
+                steamid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dica"];
                 };
             };
             /** @description Validation Error */

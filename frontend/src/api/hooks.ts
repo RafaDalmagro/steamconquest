@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import {
+  fetchDica,
   fetchGameDetail,
   fetchGames,
   fetchPlayerSummary,
@@ -60,5 +61,28 @@ export function useGameDetail(steamid: string, appid: number) {
     queryKey: ["game", steamid, appid],
     queryFn: () => fetchGameDetail(steamid, appid),
     enabled: isSteamId64(steamid),
+  });
+}
+
+// `habilitada` é parâmetro, e não estado interno: a dica é o único dado *pago*
+// do app, então quem decide gastar é a UI no clique — nunca o render. Sem isso,
+// abrir a aba "Pendentes" de um jogo grande dispararia ~90 chamadas pagas.
+//
+// A queryKey não leva `steamid` de propósito, espelhando a chave do backend
+// (`dica:{appid}:{apiname}`): a dica é função de (jogo, conquista), então dois
+// perfis abertos na mesma sessão reaproveitam a entrada em vez de duplicá-la.
+export function useDica(
+  steamid: string,
+  appid: number,
+  apiname: string,
+  habilitada: boolean,
+) {
+  return useQuery({
+    queryKey: ["dica", appid, apiname],
+    queryFn: () => fetchDica(steamid, appid, apiname),
+    enabled: habilitada && isSteamId64(steamid),
+    // Custou dinheiro: não revalida por foco de janela nem por remontagem.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }

@@ -3,7 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { useGames, usePlayerSummary } from "./hooks";
+import { useDica, useGames, usePlayerSummary } from "./hooks";
 import { jsonResponse } from "@/test/utils";
 
 function wrapper() {
@@ -79,5 +79,36 @@ describe("usePlayerSummary", () => {
     renderHook(() => usePlayerSummary(""), { wrapper: wrapper() });
 
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("useDica", () => {
+  // A dica é o único dado pago do app. Buscá-la ao renderizar transformaria
+  // abrir a aba "Pendentes" de um jogo grande em ~90 chamadas pagas de uma vez.
+  it("não busca nada enquanto não for pedida", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderHook(() => useDica("76561197960287930", 10, "ACH_SPA", false), {
+      wrapper: wrapper(),
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("busca quando habilitada", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ texto: "Use a fonte termal.", fontes: [] })),
+    );
+
+    const { result } = renderHook(
+      () => useDica("76561197960287930", 10, "ACH_SPA", true),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.texto).toBe("Use a fonte termal.");
   });
 });

@@ -158,6 +158,16 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   nem escapar do `_cached()` como valor. Um chamador que receba a sentinela como
   se fosse dado produziria erro de tipo em produção, longe da causa.
 
+  ⚠️ **A guarda no retorno do `_cached()` não basta.** Quem lê `self._cache`
+  **direto**, sem passar pelo helper, também precisa se defender — e a defesa tem
+  de ser por **tipo**, não por verdade: a sentinela é um `NamedTuple`, portanto
+  *truthy* e *iterável*, e um `or []` a deixa passar para dentro de um `for`. Hoje
+  há exatamente um leitor direto (`_name()`, que precisa de `owned_games` para o
+  nome de loja); ao criar o segundo, ou ele checa o tipo, ou lê pelo helper.
+  Descoberto na implementação, não no desenho: a v1.0 desta spec escreveu o CON-142
+  pensando só no `return` do helper, e o teste pré-existente
+  `test_falha_ao_buscar_o_nome_de_loja_nao_derruba_o_detalhe` foi quem pegou.
+
 - **CON-143**: Nenhum contrato externo muda. As rotas continuam mapeando
   `SteamRateLimitError` → 429, `SteamUnavailableError` → 502 e as demais como
   hoje; os modelos de `app/schemas/models.py` não mudam; o SPA não muda e

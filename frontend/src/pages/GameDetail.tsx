@@ -25,6 +25,20 @@ type Filter = keyof typeof FILTROS;
 
 const isFilter = (v: string | null): v is Filter => v != null && v in FILTROS;
 
+// Três opções explícitas, e não uma direção derivada da aba ativa: a aba "Todas"
+// não teria resposta óbvia, o mesmo controle mudaria de significado ao trocar de
+// aba, e "quais pendentes são as mais raras" — pergunta legítima — ficaria
+// inexprimível. Ver §7.1 da spec-design-ordenacao-derivada.
+const ORDENS = {
+  desbloqueio: "Desbloqueio",
+  faceis: "Mais fáceis",
+  raras: "Mais raras",
+} as const;
+
+type OrdemAch = keyof typeof ORDENS;
+
+const isOrdem = (v: string | null): v is OrdemAch => v != null && v in ORDENS;
+
 // Filtro por *tag*, e não por `searchText`: buscar o nome da conquista devolve
 // zero resultado e a Steam cai calada nos guias populares do jogo — o usuário
 // veria "Recommended Keyboard & Mouse Settings" achando que é sobre a conquista.
@@ -53,8 +67,21 @@ export function GameDetail() {
   const [params, setParams] = useSearchParams();
   const raw = params.get("filter");
   const filter: Filter = isFilter(raw) ? raw : "all";
-  const setFilter = (f: Filter) =>
-    setParams(f === "all" ? {} : { filter: f }, { replace: true });
+  const rawOrdem = params.get("ordem");
+  const ordem: OrdemAch = isOrdem(rawOrdem) ? rawOrdem : "desbloqueio";
+
+  // Um atualizador só para os dois parâmetros, como a Library já faz: escrever
+  // um sem reler o outro apagaria o vizinho, porque `setParams` substitui a
+  // querystring inteira. Defaults omitidos para manter a URL limpa; `replace`
+  // para o botão Voltar não virar um desfazer de cliques em aba.
+  const update = (next: { filter?: Filter; ordem?: OrdemAch }) => {
+    const f = next.filter ?? filter;
+    const o = next.ordem ?? ordem;
+    const p: Record<string, string> = {};
+    if (f !== "all") p.filter = f;
+    if (o !== "desbloqueio") p.ordem = o;
+    setParams(p, { replace: true });
+  };
 
   if (isLoading) {
     return (
@@ -118,7 +145,7 @@ export function GameDetail() {
         className="mb-6"
       />
 
-      <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
+      <Tabs value={filter} onValueChange={(v) => update({ filter: v as Filter })}>
         <TabsList>
           {Object.entries(FILTROS).map(([value, label]) => (
             <TabsTrigger key={value} value={value}>

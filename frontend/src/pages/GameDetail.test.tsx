@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import App from "@/App";
-import { jsonResponse, renderWithProviders } from "@/test/utils";
+import { capturaUrl, jsonResponse, renderWithProviders } from "@/test/utils";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -343,5 +343,27 @@ describe("GameDetail", () => {
     expect(
       screen.queryByRole("link", { name: "Guias da comunidade" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("preserva a ordenação ao trocar de aba", async () => {
+    // `setParams({ filter })` substitui a querystring inteira. Com um segundo
+    // parâmetro, trocar de aba apagaria a ordenação escolhida — uma interação
+    // desfazendo silenciosamente outra.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(detailComConquistas)));
+    const url = capturaUrl();
+
+    renderWithProviders(
+      <>
+        <App />
+        <url.Spy />
+      </>,
+      "/u/76561197960287930/game/10?filter=locked&ordem=raras",
+    );
+    await screen.findByText("Conquista B");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Obtidas" }));
+
+    expect(url.atual.search).toContain("filter=achieved");
+    expect(url.atual.search).toContain("ordem=raras");
   });
 });

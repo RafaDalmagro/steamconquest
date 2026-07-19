@@ -1319,3 +1319,51 @@ async def test_falha_guardada_volta_como_excecao_nova_e_nao_como_valor():
 
     assert segunda.value is not erro  # instância nova (REQ-141)
     assert str(segunda.value) == "Steam indisponível"
+
+
+async def test_falha_guardada_expira_e_a_steam_volta_a_ser_consultada():
+    """60s é curto de propósito: uma indisponibilidade que terminou não pode
+    ficar visível. O relógio é injetado — nada de sleep na suíte."""
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61  # passou do FALHA_TTL
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10, 10]
+
+
+async def test_falha_em_chave_de_ttl_longo_expira_pelo_ttl_da_falha():
+    """`schema:{appid}` vale 24h. A *falha* nele vale 60s.
+
+    Se a sentinela herdasse o TTL do valor, uma Steam que voltou ao ar em cinco
+    minutos ficaria marcada como quebrada por um dia — e em `genres:`, por sete.
+    """
+    relogio = {"agora": 1000.0}
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: [{"apiname": "x", "achieved": 1, "unlocktime": 0}]},
+        schemas={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = AchievementsService(client, TTLCache(now=lambda: relogio["agora"]))
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    relogio["agora"] += 61
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+
+    # (10, None) é o schema pt-BR; (10, "english") é o schema_en, que engole a
+    # falha dentro do próprio buscar() e não interessa aqui (CON-145).
+    assert [c for c in client.schema_calls if c == (10, None)] == [(10, None), (10, None)]

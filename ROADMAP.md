@@ -80,6 +80,23 @@ nos payloads existentes.
       o campo simplesmente **não vem** quando não houve jogo nas últimas 2
       semanas — nem como `0`. A ausência é o caso normal e o badge degrada
       sozinho, como previsto. Falta ver o badge **aceso** num jogo recente.
+- [x] **Ordenação por raridade no detalhe e "quase lá" na biblioteca**
+      (`spec-design-ordenacao-derivada.md`). Zero chamada nova: os dois eixos
+      ordenam dado que já estava na tela. Três opções explícitas no detalhe
+      (Desbloqueio / Mais fáceis / Mais raras) em vez de derivar a direção da aba
+      ativa — a aba "Todas" não teria resposta óbvia, e "quais pendentes são as
+      mais raras" é pergunta legítima que a derivação apagaria.
+      Três achados que só a leitura do código deu:
+      (1) o `includesFor()` precisou incluir `quase_la` — sem `include=achievements`
+      o `percent` vem `null` para todos e o botão não reordenaria nada;
+      (2) o `setParams` do detalhe substituía a **querystring inteira**, então com
+      um segundo parâmetro trocar de aba apagaria a ordenação. Virou um `update()`
+      combinado, como o da Library. O teste dessa regressão foi escrito **antes**
+      de os comparadores existirem, quando ela ainda não era visível ao usuário;
+      (3) nenhum teste do projeto lia a URL após uma interação (o `MemoryRouter`
+      não toca `window.location`) — daí o `capturaUrl()` novo em `test/utils.tsx`.
+      ⚠️ Duas fixtures de teste **não** podem se chamar "Rara": o `AchievementItem`
+      renderiza um badge com esse texto abaixo de 10%, e a busca por texto acha dois.
 
 ## Features médias (REQ-040 a REQ-042)
 

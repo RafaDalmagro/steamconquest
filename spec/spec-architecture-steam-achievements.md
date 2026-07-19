@@ -34,8 +34,11 @@ fazer perguntas.
 **No escopo:**
 - Listar biblioteca + tempo de jogo (playtime).
 - Detalhe de jogo: conquistas obtidas × pendentes, % de progresso, raridade global.
-- Ordenação da biblioteca: playtime, nome, % concluído, nº de conquistas, última
-  vez jogado.
+- Ordenação da biblioteca: playtime, nome, % concluído, **quase lá**, nº de
+  conquistas, última vez jogado. O eixo "quase lá" é **do SPA** e não existe no
+  contrato da API (ver REQ-002 e REQ-169 da `spec-design-ordenacao-derivada.md`).
+- Ordenação das conquistas no detalhe: desbloqueio (default), mais fáceis, mais
+  raras — client-side, sobre a lista já carregada.
 - Agrupamento da biblioteca por gênero.
 - Busca por nome (client-side) e filtro por status na página de detalhe.
 - Perfil público do jogador (nome e avatar).
@@ -90,6 +93,10 @@ fazer perguntas.
   (`app/schemas/models.py`, como `Literal`), e usado tanto pela rota quanto pelo
   service — é assim que ele chega ao OpenAPI e, dali, aos tipos do SPA
   (`npm run generate:api`). Ausente ⇒ `playtime`. Valor **inválido ⇒ 422** (ver §4).
+  ⚠️ O eixo **`quase_la` do SPA não entra neste `Literal`**, deliberadamente: o
+  backend faria a mesma comparação sobre os mesmos campos que já envia, e o limiar
+  de 80% passaria a viver em dois lugares e duas linguagens, livres para divergir.
+  Mesmo precedente do `group`. Ver REQ-169 da `spec-design-ordenacao-derivada.md`.
 - **REQ-003**: `sort` **só ordena**. Nenhum valor de `sort` dispara chamada extra à
   Steam: sem `include`, a rota executa **uma única** chamada (`GetOwnedGames`).
   `sort=percent`/`ach_count` sem `include=achievements` é legal — os campos vêm

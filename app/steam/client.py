@@ -4,6 +4,8 @@ from typing import Callable
 
 import httpx
 
+from app.core.rate_limit import TokenBucket
+
 from app.errors import (
     SteamDataUnavailable,
     SteamProfileNotFound,
@@ -15,34 +17,6 @@ from app.errors import (
 _BASE = "https://api.steampowered.com"
 # Loja (não-oficial): única fonte de gênero. Sem key, best-effort.
 _STORE_APPDETAILS = "https://store.steampowered.com/api/appdetails"
-
-
-class _TokenBucket:
-    """Teto global de chamadas à Steam, para proteger a quota da STEAM_API_KEY.
-
-    Guarda a *chave*, não o processo: vale para qualquer chamador, e nenhum
-    header forjado escapa dele. `burst` absorve a rajada legítima de um load de
-    biblioteca grande (uma chamada de conquistas por jogo); `rate` sustenta o
-    orçamento diário da chave.
-    """
-
-    def __init__(self, rate_per_minute: float, burst: int, now: Callable[[], float]):
-        self._rate = rate_per_minute / 60.0  # tokens por segundo
-        self._capacity = float(burst)
-        self._tokens = float(burst)
-        self._now = now
-        self._updated = now()
-
-    def consume(self) -> bool:
-        agora = self._now()
-        self._tokens = min(
-            self._capacity, self._tokens + (agora - self._updated) * self._rate
-        )
-        self._updated = agora
-        if self._tokens < 1:
-            return False
-        self._tokens -= 1
-        return True
 
 
 class SteamClient:
@@ -69,7 +43,7 @@ class SteamClient:
         self._max_retries = max_retries
         self._backoff = backoff
         self._lang = language
-        self._bucket = _TokenBucket(rate_per_minute, rate_burst, now)
+        self._bucket = TokenBucket(rate_per_minute, rate_burst, now)
 
     async def get_owned_games(self, steamid: str) -> list[dict]:
         data = await self._get(

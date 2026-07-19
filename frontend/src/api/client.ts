@@ -71,7 +71,7 @@ export function buildApiUrl(
 // É esta lista que identifica a query no cache (ver useGames), então a ordem dos
 // itens tem de ser estável — ela é derivada, nunca montada pelo caller.
 export const includesFor = (sort: Sort, group: Group): Include[] => [
-	...(sort === "percent" || sort === "ach_count"
+	...(sort === "percent" || sort === "ach_count" || sort === "quase_la"
 		? (["achievements"] as const)
 		: []),
 	...(group === "genre" ? (["genres"] as const) : []),

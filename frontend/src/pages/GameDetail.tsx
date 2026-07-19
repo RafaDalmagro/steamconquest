@@ -4,6 +4,7 @@ import type { Achievement } from "@/api/client";
 import { useGameDetail } from "@/api/hooks";
 import { AchievementItem } from "@/components/AchievementItem";
 import { Message } from "@/components/Message";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -25,6 +26,20 @@ type Filter = keyof typeof FILTROS;
 
 const isFilter = (v: string | null): v is Filter => v != null && v in FILTROS;
 
+// Três opções explícitas, e não uma direção derivada da aba ativa: a aba "Todas"
+// não teria resposta óbvia, o mesmo controle mudaria de significado ao trocar de
+// aba, e "quais pendentes são as mais raras" — pergunta legítima — ficaria
+// inexprimível. Ver §7.1 da spec-design-ordenacao-derivada.
+const ORDENS = {
+  desbloqueio: "Desbloqueio",
+  faceis: "Mais fáceis",
+  raras: "Mais raras",
+} as const;
+
+type OrdemAch = keyof typeof ORDENS;
+
+const isOrdem = (v: string | null): v is OrdemAch => v != null && v in ORDENS;
+
 // Filtro por *tag*, e não por `searchText`: buscar o nome da conquista devolve
 // zero resultado e a Steam cai calada nos guias populares do jogo — o usuário
 // veria "Recommended Keyboard & Mouse Settings" achando que é sobre a conquista.
@@ -44,6 +59,27 @@ const quando = (ach: Achievement) =>
 const porDesbloqueio = (a: Achievement, b: Achievement) =>
   Number(b.achieved) - Number(a.achieved) || quando(b) - quando(a);
 
+// `null` (a Steam não devolveu raridade) vai sempre para o fim, nos dois
+// sentidos — nunca para o topo de "raras". Tratá-lo como 0 afirmaria que a
+// conquista sem dado é a mais rara do jogo: falso, e apresentado como resultado
+// de ordenação.
+const porRaridade = (dir: 1 | -1) => (a: Achievement, b: Achievement) => {
+  const x = a.global_percent;
+  const y = b.global_percent;
+  if (x == null) return y == null ? 0 : 1;
+  if (y == null) return -1;
+  return (x - y) * dir;
+};
+
+const COMPARADORES: Record<
+  OrdemAch,
+  (a: Achievement, b: Achievement) => number
+> = {
+  desbloqueio: porDesbloqueio,
+  faceis: porRaridade(-1), // maior % de jogadores primeiro
+  raras: porRaridade(1), // menor % primeiro
+};
+
 export function GameDetail() {
   const { steamid = "", appid } = useParams();
   const id = Number(appid);
@@ -53,8 +89,21 @@ export function GameDetail() {
   const [params, setParams] = useSearchParams();
   const raw = params.get("filter");
   const filter: Filter = isFilter(raw) ? raw : "all";
-  const setFilter = (f: Filter) =>
-    setParams(f === "all" ? {} : { filter: f }, { replace: true });
+  const rawOrdem = params.get("ordem");
+  const ordem: OrdemAch = isOrdem(rawOrdem) ? rawOrdem : "desbloqueio";
+
+  // Um atualizador só para os dois parâmetros, como a Library já faz: escrever
+  // um sem reler o outro apagaria o vizinho, porque `setParams` substitui a
+  // querystring inteira. Defaults omitidos para manter a URL limpa; `replace`
+  // para o botão Voltar não virar um desfazer de cliques em aba.
+  const update = (next: { filter?: Filter; ordem?: OrdemAch }) => {
+    const f = next.filter ?? filter;
+    const o = next.ordem ?? ordem;
+    const p: Record<string, string> = {};
+    if (f !== "all") p.filter = f;
+    if (o !== "desbloqueio") p.ordem = o;
+    setParams(p, { replace: true });
+  };
 
   if (isLoading) {
     return (
@@ -91,7 +140,7 @@ export function GameDetail() {
     .filter((a) =>
       filter === "all" ? true : filter === "achieved" ? a.achieved : !a.achieved,
     )
-    .sort(porDesbloqueio);
+    .sort(COMPARADORES[ordem]);
   const percent = Math.round(data.percent);
 
   return (
@@ -118,7 +167,30 @@ export function GameDetail() {
         className="mb-6"
       />
 
-      <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
+      {/* Some quando ordenar não mudaria nada: jogo sem stats globais na Steam
+          renderiza sem raridade, e um controle que não faz nada é um controle
+          que mente. Mesma postura do selo "Rara" e do "Continuar como". */}
+      {data.achievements.some((a) => a.global_percent != null) && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="font-display text-xs uppercase tracking-widest text-muted-foreground">
+            Ordenar:
+          </span>
+          {Object.entries(ORDENS).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={ordem === value ? "active" : "default"}
+              aria-pressed={ordem === value}
+              onClick={() => update({ ordem: value as OrdemAch })}
+              className="font-display text-xs uppercase tracking-wide"
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      <Tabs value={filter} onValueChange={(v) => update({ filter: v as Filter })}>
         <TabsList>
           {Object.entries(FILTROS).map(([value, label]) => (
             <TabsTrigger key={value} value={value}>

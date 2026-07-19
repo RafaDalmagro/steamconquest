@@ -17,6 +17,9 @@ describe("includesFor", () => {
 	it("pede conquistas quando a ordem depende do progresso", () => {
 		expect(includesFor("percent", "none")).toEqual(["achievements"]);
 		expect(includesFor("ach_count", "none")).toEqual(["achievements"]);
+		// Sem isto o percent vem null para todos, isQuaseLa devolve false para
+		// todos, e o botão "Quase lá" não reordenaria nada.
+		expect(includesFor("quase_la", "none")).toEqual(["achievements"]);
 	});
 
 	it("pede gênero quando a UI vai agrupar por gênero", () => {

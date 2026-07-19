@@ -3,7 +3,13 @@ import { Button } from "@/components/ui/button";
 // Ordenar é assunto da UI, não da API: a ordem sai de campos que já vêm no
 // payload, e quem reordena é o cliente. Por isso o vocabulário nasce aqui (como o
 // `Group`) e não do OpenAPI — o backend não tem opinião sobre ordem.
-export type Sort = "playtime" | "name" | "percent" | "ach_count" | "last_played";
+export type Sort =
+  | "playtime"
+  | "name"
+  | "percent"
+  | "quase_la"
+  | "ach_count"
+  | "last_played";
 
 // Record (e não array) de propósito: o TS cobra uma chave para cada `Sort`, então
 // um sort novo vira erro de compilação em quem precisa tratá-lo (aqui e nos
@@ -13,6 +19,7 @@ const ROTULOS: Record<Sort, string> = {
   playtime: "Tempo de jogo",
   name: "Nome",
   percent: "% concluído",
+  quase_la: "Quase lá",
   ach_count: "Nº de conquistas",
   last_played: "Última vez jogado",
 };

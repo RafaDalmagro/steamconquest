@@ -47,6 +47,12 @@ const COMPARADORES: Record<Sort, (a: Game, b: Game) => number> = {
   playtime: (a, b) => b.playtime_minutes - a.playtime_minutes,
   name: (a, b) => collator.compare(a.name, b.name),
   percent: (a, b) => (b.percent ?? 0) - (a.percent ?? 0),
+  // Dois níveis: primeiro o grupo "quase lá", depois o mais perto de fechar.
+  // Fora do grupo a ordem de entrada é preservada (sort estável), então 100% e
+  // jogos sem dado de conquista caem para baixo sem critério inventado.
+  quase_la: (a, b) =>
+    Number(isQuaseLa(b.percent)) - Number(isQuaseLa(a.percent)) ||
+    (b.percent ?? 0) - (a.percent ?? 0),
   ach_count: (a, b) => (b.achieved_count ?? 0) - (a.achieved_count ?? 0),
   last_played: (a, b) => quando(b) - quando(a),
 };

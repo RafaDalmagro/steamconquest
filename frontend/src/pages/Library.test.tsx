@@ -437,4 +437,50 @@ describe("Library", () => {
     // Um único card tem data: o "nunca jogado" não inventa uma.
     expect(screen.queryAllByText(/Jogado em/)).toHaveLength(1);
   });
+
+  it("ordena os quase-concluídos primeiro, do mais perto de fechar", async () => {
+    // 100% não é "quase": o loop está fechado. Ele e o 30% caem no segundo
+    // grupo, na ordem em que a Steam devolveu.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          { appid: 10, name: "Fechado", playtime_minutes: 10, icon_url: null, percent: 100 },
+          { appid: 20, name: "Noventa", playtime_minutes: 10, icon_url: null, percent: 95 },
+          { appid: 30, name: "Oitenta", playtime_minutes: 10, icon_url: null, percent: 85 },
+          { appid: 40, name: "Longe", playtime_minutes: 10, icon_url: null, percent: 30 },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930");
+    await screen.findByText("Fechado");
+
+    await userEvent.click(screen.getByRole("button", { name: "Quase lá" }));
+
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Noventa", "Oitenta", "Fechado", "Longe"]);
+  });
+
+  it("não quebra ao ordenar por quase lá com jogos sem dados de conquista", async () => {
+    // percent null (jogo sem conquistas) nunca é "quase lá": isQuaseLa já
+    // garante isso, e o comparador não pode promovê-lo pelo `?? 0`.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          { appid: 10, name: "SemDado", playtime_minutes: 10, icon_url: null, percent: null },
+          { appid: 20, name: "Quase", playtime_minutes: 10, icon_url: null, percent: 90 },
+        ]),
+      ),
+    );
+
+    renderWithProviders(<App />, "/u/76561197960287930?sort=quase_la");
+    await screen.findByText("Quase");
+
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Quase", "SemDado"]);
+  });
 });

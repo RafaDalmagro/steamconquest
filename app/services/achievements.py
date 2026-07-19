@@ -10,6 +10,8 @@ from app.errors import (
     SteamDataUnavailable,
     SteamError,
     SteamProfileNotFound,
+    SteamRateLimitError,
+    SteamUnavailableError,
     SteamVanityNotFound,
 )
 from app.schemas.models import (
@@ -54,10 +56,34 @@ GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
 # retenta em ~1h para se recuperar sozinho.
 GENRES_MISS_TTL = 3_600
+# TTL da *falha*, e não do valor — de propósito independente do TTL da chave.
+# Amarrá-lo ao TTL do valor faria uma indisponibilidade de 30s ficar guardada por
+# 24h em `schema:` ou 7 dias em `genres:`. Ver REQ-143.
+FALHA_TTL = 60
 
 # Sentinela de cache negativo: distingue "não existe" (cacheado) de "não está no
 # cache" (None), sem precisar guardar a exceção.
 _NAO_EXISTE = object()
+
+
+class _Falha(NamedTuple):
+    """Sentinela de falha transitória guardada no cache.
+
+    Guarda **tipo e mensagem**, nunca a instância da exceção: a sentinela vive
+    até FALHA_TTL e pode ser lida por dezenas de requisições nesse intervalo, e
+    re-levantar a mesma instância encadeia `__traceback__` a cada vez.
+    """
+
+    tipo: type[Exception]
+    mensagem: str
+
+
+# Conjunto FECHADO. O critério não é "é transitória?" — é "o fetch paga retry com
+# backoff?", e hoje isso significa exatamente "passa por SteamClient._get()".
+# Nenhuma exceção de `ai/` entra aqui: aquela camada não retenta e não dorme, e o
+# AiRateLimitError pode vir do token bucket local, que se recupera sozinho — a
+# guarda prolongaria o bloqueio em vez de evitar uma espera. Ver CON-141/GUD-140.
+_FALHAS_GUARDADAS = (SteamUnavailableError, SteamRateLimitError)
 
 
 class Progresso(NamedTuple):
@@ -304,7 +330,13 @@ class AchievementsService:
         (delistado): é o nome interno do estúdio, às vezes um codinome
         ("GFREMP2" para Remnant II). `App {appid}` é o último recurso.
         """
-        owned = self._cache.get(f"owned_games:{steamid}") or []
+        # Único ponto que lê o cache sem passar pelo `_cached()`, então é aqui que
+        # a sentinela de falha poderia escapar (CON-142). Checar o *tipo* e não a
+        # verdade: `_Falha` é um NamedTuple — truthy e iterável —, então um
+        # `or []` não protegeria e o `next()` abaixo iteraria (tipo, mensagem).
+        owned = self._cache.get(f"owned_games:{steamid}")
+        if not isinstance(owned, list):
+            owned = []  # miss ou falha guardada: sem nome de loja, cai no fallback
         nome = next((g["name"] for g in owned if g["appid"] == appid), "")
         return nome or schema.get("gameName") or f"App {appid}"
 
@@ -347,11 +379,24 @@ class AchievementsService:
 
         `ttl` pode depender do valor (gênero encontrado dura mais que gênero
         ausente). `None` nunca é cacheado: é o próprio sinal de miss do TTLCache.
+
+        Falha transitória também é guardada, com TTL próprio (`FALHA_TTL`), e
+        volta como exceção — nunca como valor. Colapsá-la num valor faria o
+        detalhe de um jogo momentaneamente fora do ar afirmar "jogo sem
+        conquistas", que é o significado já ocupado por `[]` (CON-011).
         """
         hit = self._cache.get(key)
+        # Antes do `is not None`: a sentinela é um valor, e cair no return a
+        # devolveria ao chamador como se fosse dado (CON-142).
+        if isinstance(hit, _Falha):
+            raise hit.tipo(hit.mensagem)
         if hit is not None:
             return hit
-        value = await fetch()
+        try:
+            value = await fetch()
+        except _FALHAS_GUARDADAS as exc:
+            self._cache.set(key, _Falha(type(exc), str(exc)), FALHA_TTL)
+            raise
         if value is not None:
             self._cache.set(key, value, ttl(value) if callable(ttl) else ttl)
         return value

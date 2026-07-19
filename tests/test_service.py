@@ -1279,3 +1279,43 @@ async def test_trocar_de_provedor_gera_dica_nova():
     # E cada um continua tendo o seu em cache, sem chamar de novo.
     assert (await a.dica(STEAMID, 10, "ACH_A")).texto == "da anthropic"
     assert len(um.calls) == 1 and len(outro.calls) == 1
+
+
+async def test_falha_transitoria_da_steam_nao_e_re_buscada_dentro_da_janela():
+    """Um jogo quebrado não pode custar o backoff em toda requisição.
+
+    Medido no app real: o GetPlayerAchievements do appid 1966720 devolve 5xx de
+    forma consistente, o client retenta 4× (3,5s dormindo) e a biblioteca inteira
+    espera. Sem guardar a falha, esse custo se repete a cada request.
+    """
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: SteamUnavailableError("Steam indisponível")},
+    )
+    service = make_service(client)
+
+    for _ in range(2):
+        with pytest.raises(SteamUnavailableError):
+            await service.game_detail(STEAMID, 10)
+
+    assert client.ach_calls == [10]  # a segunda leitura veio do cache, não da Steam
+
+
+async def test_falha_guardada_volta_como_excecao_nova_e_nao_como_valor():
+    """A sentinela nunca chega ao chamador, e o re-levantamento não reusa a
+    instância guardada — ela vive até 60s no cache, e `raise` da mesma instância
+    encadeia traceback a cada leitura."""
+    erro = SteamUnavailableError("Steam indisponível")
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
+        achievements={10: erro},
+    )
+    service = make_service(client)
+
+    with pytest.raises(SteamUnavailableError):
+        await service.game_detail(STEAMID, 10)
+    with pytest.raises(SteamUnavailableError) as segunda:
+        await service.game_detail(STEAMID, 10)
+
+    assert segunda.value is not erro  # instância nova (REQ-141)
+    assert str(segunda.value) == "Steam indisponível"

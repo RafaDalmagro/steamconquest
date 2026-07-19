@@ -90,3 +90,31 @@ class GameDetail(BaseModel):
     total_count: int
     percent: float
     achievements: list[Achievement]
+
+
+class Fonte(BaseModel):
+    """URL citada pela busca web, exibida junto da Dica.
+
+    Existe para o usuário *conferir* a síntese contra o material original — é o
+    que separa "a IA resumiu um guia" de "a IA afirmou algo". Sem fonte, uma
+    alucinação e um fato têm exatamente a mesma aparência na tela.
+    """
+
+    title: str
+    url: str
+
+
+class Dica(BaseModel):
+    """Síntese de IA sobre como obter *uma* conquista pendente.
+
+    Não confundir com "guia": guia é o documento da comunidade Steam, por jogo
+    (ver CONTEXT.md). A Dica é por conquista, e é gerada.
+
+    Função de (jogo, conquista) e de mais nada — nenhum dado do jogador entra
+    nela. É o que permite a chave de cache `dica:{appid}:{apiname}` ser
+    compartilhada entre visitantes em vez de multiplicar custo por pessoa.
+    """
+
+    # Markdown simples, escrito em pt-BR.
+    texto: str
+    fontes: list[Fonte]

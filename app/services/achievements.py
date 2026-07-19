@@ -5,6 +5,7 @@ from typing import Any, Callable, NamedTuple
 
 from app.core.cache import TTLCache
 from app.errors import (
+    DicaIndisponivel,
     SteamDataUnavailable,
     SteamError,
     SteamProfileNotFound,
@@ -44,6 +45,9 @@ GLOBAL_PCT_TTL = 86_400
 # para distinguir, então TTL curto: retenta em ~1h em vez de cachear o vazio por
 # um dia inteiro.
 GLOBAL_PCT_MISS_TTL = 3_600
+# Como obter uma conquista não muda: o método é estático como o gênero. TTL longo
+# porque cada miss custa *dinheiro*, não só cota — é o único dado pago do app.
+DICA_TTL = 604_800  # 7 dias
 GENRES_TTL = 604_800  # 7 dias: gênero encontrado é estático
 # [] pode ser 429 transitório da loja, não ausência real de gênero. TTL curto:
 # não re-martela a loja a cada load (o que perpetuaria o rate limit), mas
@@ -73,10 +77,14 @@ class AchievementsService:
     o torna testável com um client falso (sem rede).
     """
 
-    def __init__(self, client, cache: TTLCache, concurrency: int = 5):
+    def __init__(self, client, cache: TTLCache, concurrency: int = 5, ai=None):
         self._client = client
         self._cache = cache
         self._concurrency = concurrency
+        # Sem default defensivo: o lifespan sempre injeta. Se `dica()` for
+        # chamada com `ai=None`, é bug de wiring e tem de estourar alto — não
+        # virar um caminho degradado silencioso.
+        self._ai = ai
 
     async def list_library(
         self,
@@ -220,6 +228,53 @@ class AchievementsService:
             total_count=total,
             percent=_percent(achieved_count, total),
             achievements=achievements,
+        )
+
+    async def dica(self, steamid: str, appid: int, apiname: str):
+        """Síntese de IA sobre como obter uma conquista pendente.
+
+        Espelha `game_detail(steamid, appid)`: recebe identificadores da URL e
+        resolve tudo internamente, para a rota só orquestrar.
+        """
+        # Gate mais externo: o jogo é *desta* biblioteca? Vem primeiro porque é o
+        # único que limita o espaço de `appid` — sem ele, todo gate abaixo já
+        # teria pago uma ida à Steam para descobrir que a resposta é não.
+        owned = await self._owned_games(steamid)
+        jogo = next((g for g in owned if g["appid"] == appid), None)
+        if jogo is None:
+            raise DicaIndisponivel(f"jogo {appid} fora da biblioteca de {steamid}")
+
+        # O estado da conquista vem *antes* do schema: `_schema_en()` pode
+        # disparar uma chamada à Steam, e `appid` é input público. Barrar primeiro
+        # mantém quem sonda longe de qualquer I/O — de graça, porque esta entrada
+        # de cache já foi paga para renderizar o detalhe.
+        player = await self._player_achievements(steamid, appid)
+        entry = next((p for p in player or [] if p.apiname == apiname), None)
+        if entry is not None and entry.achieved:
+            raise DicaIndisponivel(f"conquista {apiname} já obtida")
+
+        schema_en = await self._schema_en(appid)
+        meta_en = {a["name"]: a for a in schema_en.get("achievements", [])}
+        name_en = meta_en.get(apiname, {}).get("displayName")
+        if name_en is None:
+            # Mesma regra do link "Como conseguir" (REQ-094): sem nome buscável
+            # não há pergunta a fazer. Aqui pesa mais — ali o custo era um link
+            # inútil, aqui seria uma chamada paga sem chance de acertar.
+            raise DicaIndisponivel(f"conquista {apiname} sem nome em inglês")
+
+        # O nome vem do `GetOwnedGames` — nome de *loja*, já em inglês ("Nioh:
+        # Complete Edition"). O `gameName` do schema é o interno do estúdio
+        # ("GFREMP2") e envenenaria a busca. Aqui não há fallback: o gate acima
+        # garante que o jogo está na biblioteca, então o nome existe.
+        #
+        # `_cached()` e não `_cached_ou_ausente()`: aqui erro é erro. Cachear um
+        # 429 transitório da Anthropic congelaria o painel quebrado por 7 dias.
+        # Chave sem `steamid` de propósito — a Dica é função de (jogo, conquista),
+        # então o primeiro visitante paga e todos os outros leem (CON-111).
+        return await self._cached(
+            f"dica:{appid}:{apiname}",
+            DICA_TTL,
+            lambda: self._ai.sintetizar(jogo["name"], name_en),
         )
 
     def _name(self, schema: dict, steamid: str, appid: int) -> str:

@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.schemas.models import (
+    Dica,
     Game,
     GameDetail,
     Include,
@@ -13,6 +14,9 @@ from app.schemas.models import (
 )
 from app.services.achievements import AchievementsService
 from app.errors import (
+    AiRateLimitError,
+    AiUnavailableError,
+    DicaIndisponivel,
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
@@ -31,6 +35,12 @@ _STEAMID = Path(pattern=r"^\d{17}$")
 # A Steam permite 2–32 chars alfanuméricos, `_` e `-`; validar aqui é o que impede
 # uma string arbitrária de virar chave de cache ou chamada à Steam.
 _VANITY = Query(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+
+# O `apiname` vira parte de uma chave de cache (`dica:{appid}:{apiname}`) e de um
+# prompt pago. Validar a forma aqui é o que impede uma string arbitrária de
+# ocupar espaço no TTLCache — que tem teto de entradas, então lixo despeja dado
+# legítimo. 64 chars cobrem com folga os nomes reais da Steam ("ACH_SPA").
+_APINAME = Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
 
 def get_service(request: Request) -> AchievementsService:
@@ -71,6 +81,25 @@ async def game_detail(appid: int, steamid: str = _STEAMID, service=Depends(get_s
     return await service.game_detail(steamid, appid)
 
 
+@router.get(
+    "/users/{steamid}/games/{appid}/achievements/{apiname}/dica",
+    response_model=Dica,
+)
+async def dica(
+    appid: int,
+    apiname: str = _APINAME,
+    steamid: str = _STEAMID,
+    service=Depends(get_service),
+):
+    """Síntese de IA de como obter uma conquista pendente.
+
+    Único endpoint do app com custo em **dinheiro** por miss. O gate (jogo na
+    biblioteca + conquista pendente) e o teto de chamadas vivem no serviço; aqui
+    só se valida a forma do input e se orquestra.
+    """
+    return await service.dica(steamid, appid, apiname)
+
+
 # Mapeamento de erro tipado → HTTP + mensagem amigável (pt-BR), em JSON.
 _ERROR_MAP = {
     SteamProfileNotFound: (404, "Steam ID não encontrado. Confira os 17 dígitos."),
@@ -80,6 +109,17 @@ _ERROR_MAP = {
     SteamDataUnavailable: (404, "Dados indisponíveis. O perfil pode estar privado."),
     SteamRateLimitError: (429, "A Steam limitou as requisições. Tente novamente em instantes."),
     SteamUnavailableError: (502, "A Steam está indisponível no momento."),
+    # "NPC" é a persona sob a qual a Dica é apresentada (ver CONTEXT.md). Ela vive
+    # aqui, e não só no SPA, porque o contrato do app é `{"detail": "<pt-BR>"}`
+    # exibido verbatim — duplicar um mapa erro→texto no frontend só para manter
+    # estas mensagens "neutras" seria pior que a persona vazar para a borda.
+    #
+    # A vagueza é obrigatória, não estilo: os motivos (conquista obtida, jogo fora
+    # da biblioteca, apiname inexistente) são indistinguíveis de fora. Detalhar
+    # diria a quem sonda a API o que há na biblioteca de outra pessoa (SEC-111).
+    DicaIndisponivel: (404, "O NPC não tem o que dizer sobre esta conquista."),
+    AiRateLimitError: (429, "O NPC está sobrecarregado. Tente de novo em instantes."),
+    AiUnavailableError: (502, "O NPC não respondeu. Tente mais tarde."),
 }
 
 

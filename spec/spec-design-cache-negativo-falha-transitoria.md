@@ -38,15 +38,14 @@ tela.
 > saíram do conjunto (ver CON-141 e GUD-140). A v1.0 também descrevia errado o
 > mecanismo de `_app_genres` (CON-145).
 
-> **Baseline.** Esta spec é escrita contra a `main` e vale igualmente na branch
-> `feat/provedor-de-ia-plugavel`, que ainda não foi mergeada. As duas diferem no
-> arranjo interno de `ai/` (um cliente × um por provedor), no nome da chave da
-> Dica (`dica:{appid}:{apiname}` × `dica:{provedor}:{appid}:{apiname}`) e na
-> existência de `DicaSemOrcamento`. **Nada disso afeta esta feature:** o
-> `_cached()` é idêntico nas duas, o conjunto guardado é só de exceções da Steam,
-> e o fato que sustenta o CON-141 — a camada `ai/` tem token bucket e **não** tem
-> retry com backoff — é verdadeiro nas duas. O texto abaixo evita de propósito
-> nomear arquivos e chaves que diferem entre elas.
+> **Baseline.** Escrita quando o provedor de IA plugável ainda vivia numa branch
+> separada, e deliberadamente redigida para valer **antes e depois** daquele merge:
+> sem nomear arquivos de `ai/` nem a chave da Dica, que mudavam entre os dois
+> estados. O merge aconteceu (PR #11) e a spec seguiu correta sem uma linha de
+> ajuste — que era exatamente o objetivo. O fato que sustenta o CON-141 (a camada
+> `ai/` tem token bucket e **não** tem retry com backoff) vale nos dois estados, e
+> `DicaSemOrcamento` — antes hipotética, hoje existente — já estava coberta pela
+> regra escrita por **hierarquia** em vez de lista de tipos.
 
 ## 1. Purpose & Scope
 

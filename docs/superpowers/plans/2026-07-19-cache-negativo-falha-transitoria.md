@@ -10,7 +10,7 @@
 
 **Spec:** `spec/spec-design-cache-negativo-falha-transitoria.md` (v1.1). Em caso de divergência entre este plano e a spec, **a spec vence** — pare e reporte.
 
-**Baseline:** branch `fix/cache-negativo-falha`, criada a partir da `main`. A branch `feat/provedor-de-ia-plugavel` **não** está mergeada e reorganiza `app/ai/` — nada que esta feature toque. Se o código encontrado divergir do mostrado aqui (ex.: `app/ai/base.py` em vez de `app/ai/client.py`, ou um parâmetro `nome` no `FakeAiClient`), **pare e reporte**: significa que a branch errada está em uso.
+**Baseline:** branch `fix/cache-negativo-falha`, criada a partir da `main`. A branch `feat/provedor-de-ia-plugavel` **não** está mergeada e reorganiza `app/ai/` — nada que esta feature toque. Se o código encontrado divergir do mostrado aqui (ex.: o arranjo de `ai/` divergir do descrito), **pare e reporte**: significa que a branch errada está em uso.
 
 ## Global Constraints
 

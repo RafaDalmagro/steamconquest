@@ -118,3 +118,6 @@ class Dica(BaseModel):
     # Markdown simples, escrito em pt-BR.
     texto: str
     fontes: list[Fonte]
+    # Qual provedor gerou. Exibido junto do marcador de IA, nunca no lugar dele
+    # (SEC-130): "Gemini" é marca, e quem não a conhece não lê como IA.
+    provedor: str = ""

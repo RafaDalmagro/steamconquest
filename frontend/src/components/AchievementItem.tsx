@@ -162,6 +162,11 @@ export function AchievementItem({
                 NPC
               </strong>
               {" · modelo de IA"}
+              {/* O provedor é informação ADICIONAL, nunca substituta (SEC-130).
+                  Trocar "modelo de IA" por "Gemini" quebraria o SEC-113: quem
+                  não conhece a marca lê como nome próprio — possivelmente o
+                  nome do NPC. */}
+              {dica.data?.provedor && ` (${dica.data.provedor})`}
             </p>
 
             {dica.isPending && (

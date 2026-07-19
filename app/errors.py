@@ -55,6 +55,15 @@ class AiUnavailableError(AiError):
     """Provedor de IA indisponível ou falhou (5xx, rede, resposta inutilizável)."""
 
 
+class DicaSemOrcamento(AiError):
+    """Orçamento diário de chamadas pagas esgotado.
+
+    Irmã de `AiRateLimitError`, não filha: as duas viram 429, mas dizem coisas
+    diferentes ao usuário. "Tente em instantes" é verdade para rajada e mentira
+    para orçamento — este só volta amanhã.
+    """
+
+
 class DicaIndisponivel(Exception):
     """Não há dica a gerar para esta conquista — e não se paga para descobrir.
 

@@ -6,6 +6,7 @@ from typing import Any, Callable, NamedTuple
 from app.core.cache import TTLCache
 from app.errors import (
     DicaIndisponivel,
+    DicaSemOrcamento,
     SteamDataUnavailable,
     SteamError,
     SteamProfileNotFound,
@@ -77,7 +78,9 @@ class AchievementsService:
     o torna testável com um client falso (sem rede).
     """
 
-    def __init__(self, client, cache: TTLCache, concurrency: int = 5, ai=None):
+    def __init__(
+        self, client, cache: TTLCache, concurrency: int = 5, ai=None, orcamento=None
+    ):
         self._client = client
         self._cache = cache
         self._concurrency = concurrency
@@ -85,6 +88,7 @@ class AchievementsService:
         # chamada com `ai=None`, é bug de wiring e tem de estourar alto — não
         # virar um caminho degradado silencioso.
         self._ai = ai
+        self._orcamento = orcamento
 
     async def list_library(
         self,
@@ -271,10 +275,23 @@ class AchievementsService:
         # 429 transitório da Anthropic congelaria o painel quebrado por 7 dias.
         # Chave sem `steamid` de propósito — a Dica é função de (jogo, conquista),
         # então o primeiro visitante paga e todos os outros leem (CON-111).
+        async def buscar():
+            # Debita **aqui dentro**, e não antes do `_cached()`: só o miss custa
+            # dinheiro. Debitar fora faria um cache hit — que é de graça —
+            # consumir orçamento, e o teto do dia acabaria sem ninguém pagar
+            # nada. O `steamid` fica neste nível de propósito: `sintetizar()`
+            # não recebe dado do jogador (AC-118), então o orçamento não pode
+            # morar no cliente de IA.
+            if self._orcamento is not None and not self._orcamento.consumir(steamid):
+                raise DicaSemOrcamento("orçamento diário de dicas esgotado")
+            return await self._ai.sintetizar(jogo["name"], name_en)
+
+        # O provedor entra na chave porque a Dica do Gemini não é o mesmo
+        # artefato que a da Anthropic. Sem isso, trocar de provedor não teria
+        # efeito no que já está em cache (REQ-134). O nome vem do cliente: o
+        # serviço não sabe que existe configuração de provedor.
         return await self._cached(
-            f"dica:{appid}:{apiname}",
-            DICA_TTL,
-            lambda: self._ai.sintetizar(jogo["name"], name_en),
+            f"dica:{self._ai.nome}:{appid}:{apiname}", DICA_TTL, buscar
         )
 
     def _name(self, schema: dict, steamid: str, appid: int) -> str:

@@ -82,9 +82,14 @@ Dependências apontam sempre para o domínio. Concretamente:
   **modelos de domínio como JSON** (não renderiza HTML).
 - `services/` **não** importa `Request`/`fastapi`.
 - `steam/` é a única camada que fala HTTP com a Steam.
-- `ai/` é a única camada que fala HTTP com a Anthropic — espelho exato do papel
-  de `steam/`. `services/` recebe o `AiClient` por construtor; `web/` não importa
-  o SDK. A `ANTHROPIC_API_KEY` nunca chega ao browser, igual à da Steam.
+- `ai/` é a única camada que fala HTTP com provedores de IA — espelho exato do
+  papel de `steam/`. Base compartilhada + uma implementação por provedor
+  (Anthropic, Gemini); a escolha vive na fábrica de `ai/__init__.py`, nunca num
+  `if` no `lifespan`. `services/` recebe um `ClienteDeIA` por construtor e não
+  sabe qual é; `web/` não importa SDK. As chaves nunca chegam ao browser.
+- Config de IA é **por provedor** (`ANTHROPIC_*`, `GEMINI_*`), nunca genérica: o
+  valor certo depende de qual está ativo, e um `AI_MODEL` genérico não diria
+  isso. Só a chave do provedor ativo é obrigatória, validada no boot.
 - **O frontend nunca fala com a Steam** — só com `/api`. O FastAPI é o único
   gateway da Steam (a `STEAM_API_KEY` nunca chega ao browser).
 
@@ -152,7 +157,8 @@ o catálogo global, não a conta).
 - Cache só via `TTLCache`, sempre pelos helpers do service (chaves
   `owned_games:{steamid}`, `player_ach:{steamid}:{appid}`, `schema:{appid}`,
   `schema_en:{appid}`, `genres:{appid}`, `global_pct:{appid}`,
-  `player_summary:{steamid}`, `vanity:{nome}`, `dica:{appid}:{apiname}`). É
+  `player_summary:{steamid}`, `vanity:{nome}`,
+  `dica:{provedor}:{appid}:{apiname}`). É
   volátil e por processo; **não**
   introduzir banco para "guardar histórico" sem aprovação explícita.
 - Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga,
@@ -167,7 +173,7 @@ o catálogo global, não a conta).
   incluir `name`/`description` (payload dobra) que o app descartaria, pois o texto
   exibido vem do `schema:{appid}` — chave por **jogo**, compartilhada. Não voltar a
   guardar o payload cru: o teto do cache conta entradas, não bytes.
-- `dica:{appid}:{apiname}` é o **único dado pago** do app: cada miss é dinheiro,
+- `dica:{provedor}:{appid}:{apiname}` é o **único dado pago** do app: cada miss é dinheiro,
   não só cota. Três consequências que não são estilo:
   (1) chave **sem `steamid`** — a Dica é função de (jogo, conquista), então o
   primeiro visitante paga e o resto lê; enriquecer o prompt com dados do jogador

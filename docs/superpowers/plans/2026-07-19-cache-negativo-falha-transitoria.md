@@ -10,6 +10,8 @@
 
 **Spec:** `spec/spec-design-cache-negativo-falha-transitoria.md` (v1.1). Em caso de divergência entre este plano e a spec, **a spec vence** — pare e reporte.
 
+**Baseline:** branch `fix/cache-negativo-falha`, criada a partir da `main`. A branch `feat/provedor-de-ia-plugavel` **não** está mergeada e reorganiza `app/ai/` — nada que esta feature toque. Se o código encontrado divergir do mostrado aqui (ex.: `app/ai/base.py` em vez de `app/ai/client.py`, ou um parâmetro `nome` no `FakeAiClient`), **pare e reporte**: significa que a branch errada está em uso.
+
 ## Global Constraints
 
 - **Um arquivo de produção é tocado:** `app/services/achievements.py`. Nenhuma alteração em `app/steam/`, `app/ai/`, `app/web/`, `app/schemas/` ou `frontend/` (CON-143).
@@ -386,6 +388,7 @@ async def test_falha_da_ia_nunca_e_guardada():
     paga do app — piorando exatamente o caso que a guarda diz melhorar.
     """
     ai = FakeAiClient(dica=AiRateLimitError("teto local de chamadas pagas atingido"))
+    # `FakeAiClient` na main recebe só `dica` — não passar `nome`.
     client = FakeSteamClient(
         owned_games=[{"appid": 10, "name": "A", "playtime_forever": 1, "img_icon_url": "a"}],
         achievements={10: [{"apiname": "x", "achieved": 0, "unlocktime": 0}]},

@@ -32,11 +32,21 @@ tela.
 
 > **v1.1** — a v1.0 incluía `AiUnavailableError` e `AiRateLimitError` no conjunto
 > guardado, afirmando que eram "retentadas". A validação contra o código mostrou
-> que **não são**: `app/ai/base.py` tem apenas um `TokenBucket`, sem `sleep` e sem
-> retry. Pior, o `AiRateLimitError` de `base.py` vem do bucket local, que se
-> recupera sozinho por refill — guardá-lo por 60 s prolongaria um bloqueio em vez
-> de evitar uma espera. As duas saíram do conjunto (ver CON-141 e GUD-140). A v1.0
-> também descrevia errado o mecanismo de `_app_genres` (CON-145).
+> que **não são**: a camada `ai/` tem apenas um `TokenBucket`, sem `sleep` e sem
+> retry. Pior, o `AiRateLimitError` do bucket local se recupera sozinho por refill
+> — guardá-lo por 60 s prolongaria um bloqueio em vez de evitar uma espera. As duas
+> saíram do conjunto (ver CON-141 e GUD-140). A v1.0 também descrevia errado o
+> mecanismo de `_app_genres` (CON-145).
+
+> **Baseline.** Esta spec é escrita contra a `main` e vale igualmente na branch
+> `feat/provedor-de-ia-plugavel`, que ainda não foi mergeada. As duas diferem no
+> arranjo interno de `ai/` (um cliente × um por provedor), no nome da chave da
+> Dica (`dica:{appid}:{apiname}` × `dica:{provedor}:{appid}:{apiname}`) e na
+> existência de `DicaSemOrcamento`. **Nada disso afeta esta feature:** o
+> `_cached()` é idêntico nas duas, o conjunto guardado é só de exceções da Steam,
+> e o fato que sustenta o CON-141 — a camada `ai/` tem token bucket e **não** tem
+> retry com backoff — é verdadeiro nas duas. O texto abaixo evita de propósito
+> nomear arquivos e chaves que diferem entre elas.
 
 ## 1. Purpose & Scope
 
@@ -98,7 +108,7 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
 
 - **REQ-143**: A sentinela de falha usa a constante `FALHA_TTL = 60` (segundos),
   **independente** do `ttl` do valor de sucesso daquela chave. Uma falha em
-  `dica:{provedor}:{appid}:{apiname}` (cujo valor dura 7 dias) expira em 60 s,
+  a chave da Dica (cujo valor dura 7 dias) expira em 60 s,
   não em 7 dias.
 
 - **REQ-144**: Uma gravação de sucesso na mesma chave **substitui** a sentinela
@@ -119,23 +129,26 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   segunda é um contratempo. Se `player_summary`/`vanity` passarem a custar
   backoff de forma perceptível, é ciclo SDD próprio.
 
-- **CON-141**: **Nenhuma** falha da camada `ai/` é guardada —
-  `AiUnavailableError`, `AiRateLimitError` e `DicaSemOrcamento` ficam todas de
-  fora, embora a chave `dica:{provedor}:{appid}:{apiname}` seja servida pelo
-  `_cached()`. Três razões, em ordem de peso:
-  1. **Não há backoff a economizar.** `app/ai/base.py` não retenta e não dorme:
-     tem apenas um `TokenBucket`. A espera de 3,5 s que motiva esta spec existe
-     só em `SteamClient._get()`.
+- **CON-141**: **Nenhuma** exceção da hierarquia `AiError` é guardada — nem
+  `AiUnavailableError`, nem `AiRateLimitError`, nem qualquer irmã futura —, embora
+  a chave da Dica seja servida pelo `_cached()`. Três razões, em ordem de peso:
+  1. **Não há backoff a economizar.** A camada `ai/` não retenta e não dorme: tem
+     apenas um `TokenBucket`. A espera de 3,5 s que motiva esta spec existe só em
+     `SteamClient._get()`.
   2. **Guardar `AiRateLimitError` seria uma regressão.** Ele é levantado por duas
      fontes indistinguíveis pelo tipo: o 429 do SDK e a recusa do **token bucket
-     local** (`base.py`). O bucket **se recupera sozinho** por refill (com
+     local**. O bucket **se recupera sozinho** por refill (com
      `ai_rate_per_minute=2.0`, em ~30 s). Guardá-lo por `FALHA_TTL` converteria um
      bloqueio auto-resolvido em ~30 s num bloqueio garantido de 60 s — na única
      feature paga do app.
-  3. **`DicaSemOrcamento` é gate, não falha de fetch.** Não toca a rede, não
-     retenta, e só se restabelece no dia seguinte — muito além de `FALHA_TTL`.
+  3. **As irmãs que sinalizam gate não são falha de fetch.** Uma exceção de teto
+     ou orçamento não toca a rede, não retenta, e no caso de orçamento diário só
+     se restabelece no dia seguinte — muito além de `FALHA_TTL`. Cabe aqui
+     `DicaSemOrcamento`, onde ela existir.
 
-  Consequência aceita: uma Anthropic/Gemini em 5xx continua sendo re-consultada a
+  A regra é escrita por **hierarquia**, e não por lista de tipos, de propósito: um
+  provedor novo ou uma exceção nova de IA fica de fora por padrão, que é o lado
+  seguro. Consequência aceita: um provedor em 5xx continua sendo re-consultado a
   cada clique. Custo real disso é **zero em dinheiro** (a chamada falha antes de
   gerar token) e a latência é a do SDK, não a de um backoff nosso. Se a camada
   `ai/` **ganhar** retry com backoff no futuro, este CON deve ser reaberto — e o
@@ -223,7 +236,7 @@ async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch): ...
 | `SteamVanityNotFound` | Não | idem |
 | `AiUnavailableError` | Não | a camada `ai/` não retenta e não dorme — não há backoff a economizar (CON-141) |
 | `AiRateLimitError` | Não | idem, e pode vir do token bucket local, que se recupera por refill: guardar **prolongaria** o bloqueio (CON-141) |
-| `DicaSemOrcamento` | Não | gate, não falha de fetch; não toca a rede (CON-141) |
+| Qualquer outra `AiError` | Não | a exclusão é por hierarquia, não por lista (CON-141) |
 | `DicaIndisponivel` | Não | ausência é a resposta, não falha; não toca a rede |
 | Qualquer outra | Não | conjunto fechado (REQ-142) |
 
@@ -279,7 +292,7 @@ sim por natureza do resultado**:
   independência do REQ-143.
 
 - **AC-148**: Given um `fetch` que levanta `AiRateLimitError` para a chave
-  `dica:{provedor}:{appid}:{apiname}`, When `_cached()` é chamado duas vezes,
+  a chave da Dica, When `_cached()` é chamado duas vezes,
   Then o `fetch` é invocado **duas** vezes — nenhuma falha da camada `ai/` é
   guardada (CON-141). Este teste existe para que uma inclusão futura de
   `AiRateLimitError` no conjunto quebre um teste em vez de passar despercebida.
@@ -335,7 +348,7 @@ estático. O AC-147 trava isso com a chave de 24 h.
 
 **Por que nenhuma falha de IA é guardada.** Este é o ponto onde a v1.0 desta spec
 estava errada, e o erro é instrutivo. A v1.0 aplicou o rótulo "transitória" às
-exceções de IA por analogia com as da Steam, sem abrir o código: `app/ai/base.py`
+exceções de IA por analogia com as da Steam, sem abrir o código: a camada `ai/`
 não retenta e não dorme — só tem um `TokenBucket`. Sem backoff, guardar a falha
 não economiza espera nenhuma; e no caso do `AiRateLimitError` vindo do bucket
 local, que se recupera por refill em ~30 s, guardar por 60 s deixa o usuário
@@ -441,7 +454,7 @@ ar em cinco minutos volta a ser consultada em até um minuto.
 
 ### Não-caso — a Dica e o resto da camada `ai/`
 
-`dica:{provedor}:{appid}:{apiname}` é servida pelo `_cached()`, mas **nenhuma**
+A chave da Dica é servida pelo `_cached()`, mas **nenhuma**
 das suas falhas é guardada (CON-141). Duas chamadas com o provedor em 429 fazem
 duas tentativas, como hoje:
 
@@ -495,9 +508,10 @@ A implementação está conforme quando:
 - `spec/spec-design-dica-conquista-ia.md` — origem do `DICA_TTL` de 7 dias e do
   alerta sobre cachear 429 em chave de TTL longo, que esta spec generaliza no
   REQ-143.
-- `spec/spec-design-provedor-de-ia-plugavel.md` — origem das exceções
-  `AiUnavailableError` / `AiRateLimitError` / `DicaSemOrcamento` e do
-  `TokenBucket` de `app/ai/base.py`, cuja ausência de retry é a razão do CON-141.
+- `app/ai/` e `app/core/rate_limit.py` — o `TokenBucket` da camada de IA, cuja
+  presença **sem** um retry com backoff ao lado é o fato que sustenta o CON-141.
+  Ler o código, não uma spec: é o arranjo interno de `ai/` que difere entre a
+  `main` e a branch do provedor plugável, e o CON-141 vale nas duas.
 - `ROADMAP.md` — seção "Correções pendentes", item da latência, com a medição de
   origem.
 - `docs/adr/0001-steam-client-unico.md` — por que a camada `steam/` é o único

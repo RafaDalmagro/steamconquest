@@ -133,7 +133,14 @@ antes de implementar — feito.
       protegia. Pego por **teste pré-existente**
       (`test_falha_ao_buscar_o_nome_de_loja_nao_derruba_o_detalhe`), não por teste
       novo. Registrado no CON-142 e no `CLAUDE.md`.
-      Latência medida no `/verify`: **PREENCHER NA TASK 7**.
+      Latência medida no `/verify` de 19/07/2026, biblioteca de 155 jogos com o
+      1966720 presente: carga quente de **4,7s → 0,006–0,068s**. O detalhe do jogo
+      quebrado devolve **502 em 0,003s** (não 200 com `supports_achievements:false`
+      — AC-145 vale no app real, não só no teste).
+      A prova de que o ganho é da guarda, e não do cache que já existia: esperar os
+      60s do `FALHA_TTL` e repetir devolve **502 em 5,33s** (o backoff de verdade);
+      a chamada seguinte volta a **0,003s**. Três ordens de grandeza, ligadas e
+      desligadas pelo TTL da sentinela.
 
 ## Identificação do perfil (REQ-060 a REQ-062)
 

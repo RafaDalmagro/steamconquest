@@ -64,8 +64,13 @@ nos payloads existentes.
 - [x] **Data de desbloqueio das conquistas** — `Achievement.unlocked_at` (ISO-8601)
       vem do `unlocktime`; o detalhe mostra "Obtida em dd/mm/aaaa" e ordena obtidas
       da mais recente para a mais antiga (pendentes por último).
-- [x] **Busca por nome na biblioteca** — filtro client-side em `Library.tsx`, estado
-      local (não vai para a URL).
+- [x] **Busca por nome na biblioteca** — filtro client-side em `Library.tsx`.
+      ⚠️ **Corrigido em 19/07/2026:** esta linha dizia "estado local (não vai para a
+      URL)". Era verdade quando foi escrita e deixou de ser. A busca **está na URL**
+      como `q`, com `replace: true` (digitar não empilha uma entrada de histórico
+      por tecla) e o default omitido (URL limpa) — junto de `sort` e `group`. O
+      REQ-031 da spec de arquitetura carregava o mesmo erro e foi corrigido no
+      mesmo commit.
 - [x] **Resumo no topo da biblioteca** — nº de jogos · horas totais · nº de jogos
       100% (este só quando há dados de conquista, i.e. `sort=percent`/`ach_count`).
       Reflete a lista já filtrada pela busca.

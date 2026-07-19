@@ -128,8 +128,16 @@ vêm nas respostas atuais ou de agregação client-side.
   `0` para desbloqueios muito antigos) — a conquista continua listada.
 - **REQ-031**: A biblioteca oferece **busca por nome**, filtrando **client-side** a
   lista já carregada (mesmo princípio do REQ-007): zero chamadas ao servidor. A
-  busca é estado efêmero da UI e **não** entra na URL — ao contrário de `sort` e
-  `group`, que são estado **da URL do SPA** (`/u/{steamid}?sort=…&group=genre`).
+  busca é estado **da URL do SPA**, como `q`, ao lado de `sort` e `group`
+  (`/u/{steamid}?sort=…&group=genre&q=…`) — é compartilhável e sobrevive ao
+  refresh. Duas propriedades **obrigatórias**: a atualização usa `replace: true`,
+  senão cada tecla digitada empilha uma entrada no histórico e o botão Voltar fica
+  inutilizável; e o valor default é **omitido** da URL, para o link limpo continuar
+  limpo.
+  ⚠️ Até 19/07/2026 este requisito afirmava o oposto ("é estado efêmero da UI e
+  **não** entra na URL"). O código passou dessa decisão sem que o texto
+  acompanhasse. Corrigido para descrever o que existe — ver §7.4 da
+  `spec-design-ordenacao-derivada.md`.
   ⚠️ `group` é do SPA, **não** da API: quem agrupa é a Library, client-side. Para a
   API, o SPA traduz essa intenção em `include=genres` (REQ-004/REQ-050).
 - **REQ-032**: A biblioteca exibe um **resumo agregado** do que está em tela: nº de

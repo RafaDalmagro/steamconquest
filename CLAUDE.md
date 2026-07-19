@@ -74,6 +74,9 @@ Dependências apontam sempre para o domínio. Concretamente:
   **modelos de domínio como JSON** (não renderiza HTML).
 - `services/` **não** importa `Request`/`fastapi`.
 - `steam/` é a única camada que fala HTTP com a Steam.
+- `ai/` é a única camada que fala HTTP com a Anthropic — espelho exato do papel
+  de `steam/`. `services/` recebe o `AiClient` por construtor; `web/` não importa
+  o SDK. A `ANTHROPIC_API_KEY` nunca chega ao browser, igual à da Steam.
 - **O frontend nunca fala com a Steam** — só com `/api`. O FastAPI é o único
   gateway da Steam (a `STEAM_API_KEY` nunca chega ao browser).
 
@@ -81,7 +84,8 @@ Dependências apontam sempre para o domínio. Concretamente:
 app/                       # backend
 ├── config.py          # Settings via env (segredos)
 ├── core/cache.py      # TTLCache em memória — volátil, NÃO é banco
-├── steam/             # Infra HTTP (client + exceptions tipadas)
+├── steam/             # Infra HTTP da Steam (client + exceptions tipadas)
+├── ai/                # Infra HTTP da Anthropic (única camada que fala com o LLM)
 ├── services/          # Regra de negócio (achievements.py)
 ├── schemas/models.py  # Modelos de domínio (pydantic) = contrato da API
 ├── web/routes.py      # Rotas JSON sob /api (list_games, game_detail)
@@ -140,7 +144,8 @@ o catálogo global, não a conta).
 - Cache só via `TTLCache`, sempre pelos helpers do service (chaves
   `owned_games:{steamid}`, `player_ach:{steamid}:{appid}`, `schema:{appid}`,
   `schema_en:{appid}`, `genres:{appid}`, `global_pct:{appid}`,
-  `player_summary:{steamid}`, `vanity:{nome}`). É volátil e por processo; **não**
+  `player_summary:{steamid}`, `vanity:{nome}`, `dica:{appid}:{apiname}`). É
+  volátil e por processo; **não**
   introduzir banco para "guardar histórico" sem aprovação explícita.
 - Dois helpers, e a escolha não é estilo: `_cached()` quando erro é erro (propaga,
   nada é guardado); `_cached_ou_ausente()` quando o **"não existe" é uma resposta**
@@ -154,6 +159,16 @@ o catálogo global, não a conta).
   incluir `name`/`description` (payload dobra) que o app descartaria, pois o texto
   exibido vem do `schema:{appid}` — chave por **jogo**, compartilhada. Não voltar a
   guardar o payload cru: o teto do cache conta entradas, não bytes.
+- `dica:{appid}:{apiname}` é o **único dado pago** do app: cada miss é dinheiro,
+  não só cota. Três consequências que não são estilo:
+  (1) chave **sem `steamid`** — a Dica é função de (jogo, conquista), então o
+  primeiro visitante paga e o resto lê; enriquecer o prompt com dados do jogador
+  obrigaria a chavear por pessoa e multiplicaria o custo por visitante;
+  (2) o gate roda **antes** de qualquer I/O e na ordem biblioteca → pendente →
+  `name_en`, porque `appid` vem da URL e as etapas mais internas já custam
+  chamada à Steam;
+  (3) `_cached()` e nunca `_cached_ou_ausente()` — com TTL de 7 dias, cachear um
+  429 transitório congelaria o painel quebrado por uma semana.
 - `global_pct:{appid}` e `schema_en:{appid}` são chaveados pelo **jogo**, não pelo
   jogador: raridade e nome em inglês são os mesmos para todo mundo, então o cache
   é compartilhado entre visitantes. Ambos são **decoração** — falha neles nunca
@@ -171,6 +186,9 @@ o catálogo global, não a conta).
   chama — sem teto, IDs sempre novos crescem o dict até derrubar o processo.
 - Concorrência ao montar a biblioteca limitada por `Semaphore`
   (`steam_concurrency`) — manter, é o que evita 429 em conta grande.
+- O `TokenBucket` vive em `core/rate_limit.py` e cada cliente instancia o seu: a
+  lógica é a mesma, os números não. O da Steam protege **cota** (renova); o da IA
+  protege **fatura** (não renova), e por isso é uma ordem de grandeza menor.
 - Toda chamada com a key passa por um **token bucket global** no `SteamClient`
   (`steam_rate_per_minute`/`steam_rate_burst`): protege a quota da chave contra
   qualquer chamador, inclusive header forjado. Estourou → `SteamRateLimitError`

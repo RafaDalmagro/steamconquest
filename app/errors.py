@@ -37,5 +37,38 @@ class SteamRateLimitError(SteamError):
     """Rate limit da Steam (429) após esgotar o retry."""
 
 
+class AiError(Exception):
+    """Base comum das falhas do provedor de IA.
+
+    Hierarquia própria, separada de `SteamError`: são fornecedores diferentes,
+    com regimes de custo diferentes. Falha da Steam gasta cota; falha da IA gasta
+    dinheiro — e nenhum `except` best-effort deve varrer as duas juntas por
+    descuido.
+    """
+
+
+class AiRateLimitError(AiError):
+    """Teto local de chamadas pagas atingido, ou 429 do provedor."""
+
+
+class AiUnavailableError(AiError):
+    """Provedor de IA indisponível ou falhou (5xx, rede, resposta inutilizável)."""
+
+
+class DicaIndisponivel(Exception):
+    """Não há dica a gerar para esta conquista — e não se paga para descobrir.
+
+    Um tipo só para todos os motivos (conquista obtida, fora da biblioteca,
+    inexistente, sem `name_en`) porque o `_ERROR_MAP` mapeia *tipo* → mensagem:
+    tipos distintos renderiam mensagens distintas, e mensagens distintas contam a
+    quem sondar a API se um jogo está ou não na biblioteca de alguém. Uma
+    mensagem genérica não vaza nada e é menos código.
+
+    Fora da hierarquia `SteamError` de propósito: a falha não é da Steam, e
+    varrê-la num `except SteamError` best-effort seria errado — aqui a ausência é
+    a resposta, não um contratempo a engolir.
+    """
+
+
 class SteamUnavailableError(SteamError):
     """Steam indisponível (5xx / falha de rede) após esgotar o retry."""

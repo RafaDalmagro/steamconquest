@@ -2,8 +2,11 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
-from app.schemas.models import Achievement, Game, GameDetail, PlayerSummary
+from app.schemas.models import Achievement, Dica, Fonte, Game, GameDetail, PlayerSummary
 from app.errors import (
+    AiRateLimitError,
+    AiUnavailableError,
+    DicaIndisponivel,
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamRateLimitError,
@@ -16,10 +19,11 @@ STEAMID = "76561197960287930"  # SteamID64 de 17 dígitos
 
 
 class FakeService:
-    def __init__(self, games=None, detail=None, profile=None, error=None):
+    def __init__(self, games=None, detail=None, profile=None, error=None, dica=None):
         self._games = games or []
         self._detail = detail
         self._profile = profile
+        self._dica = dica
         self._error = error
         self.include_recebido = None
         self.steamid_recebido = None
@@ -42,6 +46,13 @@ class FakeService:
         if self._error:
             raise self._error
         return self._detail
+
+    async def dica(self, steamid, appid, apiname):
+        self.steamid_recebido = steamid
+        self.dica_recebida = (appid, apiname)
+        if self._error:
+            raise self._error
+        return self._dica
 
     async def resolve_vanity(self, nome):
         self.vanity_recebido = nome
@@ -304,3 +315,55 @@ def test_vanity_fora_do_formato_da_422_sem_tocar_o_servico():
 
     # Nenhum deles virou chave de cache nem chamada à Steam.
     assert not hasattr(service, "vanity_recebido")
+
+
+def test_dica_retorna_texto_e_fontes():
+    """AC-110 no contrato HTTP — o que o SPA vai consumir."""
+    service = FakeService(
+        dica=Dica(
+            texto="Use a fonte termal.",
+            fontes=[Fonte(title="Nioh 100%", url="https://exemplo/guia")],
+        )
+    )
+    client = client_with(service)
+
+    resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "texto": "Use a fonte termal.",
+        "fontes": [{"title": "Nioh 100%", "url": "https://exemplo/guia"}],
+    }
+    assert service.dica_recebida == (10, "ACH_SPA")
+
+
+def test_dica_indisponivel_vira_404_com_mensagem_generica():
+    """SEC-111 — a mensagem não conta *por que*.
+
+    Conquista obtida, jogo fora da biblioteca e apiname inexistente devolvem o
+    mesmo texto de propósito: distinguir os casos diria a quem sonda a API se um
+    jogo está ou não na biblioteca de alguém.
+    """
+    client = client_with(FakeService(error=DicaIndisponivel("obtida")))
+
+    resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
+
+    assert resp.status_code == 404
+    assert "biblioteca" not in resp.json()["detail"].lower()
+    assert "obtida" not in resp.json()["detail"].lower()
+
+
+def test_teto_de_chamadas_pagas_vira_429():
+    client = client_with(FakeService(error=AiRateLimitError("teto local")))
+
+    resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
+
+    assert resp.status_code == 429
+
+
+def test_falha_do_provedor_de_ia_vira_502():
+    client = client_with(FakeService(error=AiUnavailableError("fora do ar")))
+
+    resp = client.get(f"/api/users/{STEAMID}/games/10/achievements/ACH_SPA/dica")
+
+    assert resp.status_code == 502

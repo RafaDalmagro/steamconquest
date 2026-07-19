@@ -2,11 +2,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.ai.client import AiClient
 from app.config import load_settings
 from app.core.cache import TTLCache
 from app.services.achievements import AchievementsService
@@ -36,8 +38,17 @@ async def lifespan(app: FastAPI):
         rate_per_minute=settings.steam_rate_per_minute,
         rate_burst=settings.steam_rate_burst,
     )
+    # Cliente próprio da Anthropic, com o httpx do SDK: a Steam e a IA têm
+    # timeouts e regimes de erro diferentes, e compartilhar o pool acoplaria as
+    # duas — uma busca web lenta seguraria conexão que a biblioteca precisa.
+    ai = AiClient(
+        AsyncAnthropic(api_key=settings.anthropic_api_key),
+        model=settings.ai_model,
+        rate_per_minute=settings.ai_rate_per_minute,
+        rate_burst=settings.ai_rate_burst,
+    )
     app.state.service = AchievementsService(
-        client, TTLCache(), settings.steam_concurrency
+        client, TTLCache(), settings.steam_concurrency, ai=ai
     )
     try:
         yield

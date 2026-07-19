@@ -5,6 +5,8 @@ import type { Sort } from "@/components/SortBar";
 export type Game = components["schemas"]["Game"];
 export type GameDetail = components["schemas"]["GameDetail"];
 export type Achievement = components["schemas"]["Achievement"];
+export type Dica = components["schemas"]["Dica"];
+export type Fonte = components["schemas"]["Fonte"];
 export type PlayerSummary = components["schemas"]["PlayerSummary"];
 export type ResolvedProfile = components["schemas"]["ResolvedProfile"];
 
@@ -99,4 +101,13 @@ export const fetchPlayerSummary = (steamid: string) =>
 export const fetchGameDetail = (steamid: string, appid: number) =>
 	getJSON<GameDetail>(
 		buildApiUrl(`/users/${encodeURIComponent(steamid)}/games/${appid}`),
+	);
+
+// A dica é o único dado *pago* da API — por isso nunca é buscada junto do
+// detalhe, só sob demanda explícita (ver useDica).
+export const fetchDica = (steamid: string, appid: number, apiname: string) =>
+	getJSON<Dica>(
+		buildApiUrl(
+			`/users/${encodeURIComponent(steamid)}/games/${appid}/achievements/${encodeURIComponent(apiname)}/dica`,
+		),
 	);

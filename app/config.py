@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     steam_rate_per_minute: float = 70.0
     steam_rate_burst: int = 500
 
+    # Segredo, mesma disciplina da steam_api_key: só env, nunca no bundle ou log.
+    anthropic_api_key: str
+    # Default barato de propósito: esquecer a env var não pode virar conta cara
+    # por acidente. Trocável por ambiente sem mudar código — o payload enviado é
+    # o mínimo, válido em haiku-4-5 / sonnet-5 / opus-4-8 (CON-113).
+    ai_model: str = "claude-haiku-4-5"
+    # Teto muito menor que o da Steam: lá se protege cota que renova, aqui se
+    # protege fatura. `appid`/`apiname` vêm da URL, então este é o número que
+    # separa "alguém abusou" de "alguém abusou e custou caro".
+    ai_rate_per_minute: float = 10.0
+    ai_rate_burst: int = 20
+
 
 def load_settings() -> Settings:
     """Carrega Settings do ambiente/.env.

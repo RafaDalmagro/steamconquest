@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "pydantic-settings",
+    "anthropic>=0.117.0",
 ]
 
 [dependency-groups]

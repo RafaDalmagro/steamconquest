@@ -5,11 +5,14 @@ import pytest
 
 from app.core.cache import TTLCache
 from app.errors import (
+    AiUnavailableError,
+    DicaIndisponivel,
     SteamDataUnavailable,
     SteamProfileNotFound,
     SteamUnavailableError,
     SteamVanityNotFound,
 )
+from app.schemas.models import Dica, Fonte
 from app.services.achievements import AchievementsService
 
 STEAMID = "76561197960287930"  # SteamID64 de 17 dígitos usado nos testes
@@ -111,8 +114,27 @@ class FakeSteamClient:
         return val
 
 
-def make_service(client, concurrency=5):
-    return AchievementsService(client, TTLCache(), concurrency)
+class FakeAiClient:
+    """Cliente de IA falso — substitui a chamada *paga* nos testes de domínio.
+
+    Rastreia `calls` porque o comportamento sob teste no gate não é "devolveu a
+    dica", é "**não** gastou". Sem esse registro, um gate quebrado passaria
+    despercebido: a exceção continuaria sendo levantada, só que depois de pagar.
+    """
+
+    def __init__(self, dica=None):
+        self._dica = dica  # Dica | Exception
+        self.calls: list[tuple[str, str]] = []  # (nome_do_jogo, name_en)
+
+    async def sintetizar(self, nome_do_jogo: str, name_en: str):
+        self.calls.append((nome_do_jogo, name_en))
+        if isinstance(self._dica, Exception):
+            raise self._dica
+        return self._dica
+
+
+def make_service(client, concurrency=5, ai=None):
+    return AchievementsService(client, TTLCache(), concurrency, ai=ai)
 
 
 async def test_biblioteca_parseada_na_ordem_que_a_steam_devolveu():
@@ -959,3 +981,172 @@ async def test_falha_ao_buscar_o_nome_de_loja_nao_derruba_o_detalhe():
     assert detail.name == "App 1283410"  # caiu no fallback, mas não levantou
     assert detail.achieved_count == 1
     assert detail.percent == 100.0
+
+
+# --- Dica de conquista por IA (spec-design-dica-conquista-ia.md) -------------
+
+
+async def test_conquista_sem_nome_em_ingles_nao_gasta_chamada_paga():
+    """AC-115 — sem `name_en` não há o que perguntar, e o gate barra antes do gasto.
+
+    O schema inglês não traz a conquista, então `name_en` é None. Buscar pelo
+    `apiname` (`ACH_SPA`) não acharia nada — e chamada paga que não pode acertar
+    é dinheiro queimado, não tentativa.
+    """
+    ia = FakeAiClient()
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": []}},  # sem a conquista => name_en None
+    )
+    service = make_service(client, ai=ia)
+
+    with pytest.raises(DicaIndisponivel):
+        await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert ia.calls == []
+
+
+async def test_conquista_ja_obtida_nao_gasta_chamada_paga():
+    """AC-114 — quem já tem a conquista não tem o problema que a dica resolve.
+
+    O `name_en` existe aqui, então o gate do ciclo anterior não barra: quem
+    barra é o estado da conquista. Sem esta verificação, varrer as conquistas
+    *obtidas* de um jogo seria um caminho pago e legítimo.
+    """
+    ia = FakeAiClient()
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 1}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    with pytest.raises(DicaIndisponivel):
+        await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert ia.calls == []
+
+
+async def test_appid_fora_da_biblioteca_nao_toca_a_steam_nem_a_ia():
+    """AC-113 — o gate de biblioteca é o primeiro, e barra antes de qualquer I/O.
+
+    O jogo 99 tem conquista pendente com `name_en` — tudo o que a dica precisa,
+    exceto pertencer a esta biblioteca. `ach_calls` vazio é a asserção que
+    importa: sem ela, quem sondasse a API queimaria cota da STEAM_API_KEY com
+    appid arbitrário mesmo sem nunca alcançar a chamada paga de IA.
+    """
+    ia = FakeAiClient()
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh", "playtime_forever": 60}],
+        achievements={99: [{"apiname": "ACH_X", "achieved": 0}]},
+        schemas_en={99: {"achievements": [{"name": "ACH_X", "displayName": "Whatever"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    with pytest.raises(DicaIndisponivel):
+        await service.dica(STEAMID, 99, "ACH_X")
+
+    assert ia.calls == []
+    assert client.ach_calls == []
+
+
+async def test_dica_de_conquista_pendente_traz_texto_e_fontes():
+    """AC-110 — o caminho feliz, e o contrato do que é enviado à IA.
+
+    A asserção sobre `ia.calls` fixa os dois insumos do prompt: o nome de *loja*
+    do jogo (que o usuário reconhece, e que a Steam devolve em inglês) e o
+    `name_en` da conquista. É esse par que a busca web precisa — `display_name`
+    em pt-BR e `apiname` não achariam material nenhum.
+    """
+    ia = FakeAiClient(
+        dica=Dica(
+            texto="Use a fonte termal na região de Izumo após o terceiro chefe.",
+            fontes=[Fonte(title="Nioh 100% Achievement Guide", url="https://exemplo/guia")],
+        )
+    )
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    dica = await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert dica.texto.startswith("Use a fonte termal")
+    assert [f.url for f in dica.fontes] == ["https://exemplo/guia"]
+    assert ia.calls == [("Nioh: Complete Edition", "Spa Healer")]
+
+
+async def _dica_fixture(ia):
+    """Cenário mínimo de dica bem-sucedida, reusado nos testes de cache."""
+    return FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+
+
+async def test_dica_repetida_nao_paga_duas_vezes():
+    """AC-111 — a segunda visita lê do cache; a IA é chamada uma vez só.
+
+    É o teste que sustenta o custo da feature inteira: sem ele, cada abertura do
+    painel é uma chamada paga e a conta cresce com o tráfego, não com o acervo.
+    """
+    ia = FakeAiClient(dica=Dica(texto="Use a fonte termal.", fontes=[]))
+    client = await _dica_fixture(ia)
+    service = make_service(client, ai=ia)
+
+    await service.dica(STEAMID, 10, "ACH_SPA")
+    await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert len(ia.calls) == 1
+
+
+async def test_dica_e_compartilhada_entre_jogadores():
+    """AC-112 — dois jogadores, o mesmo jogo: só o primeiro paga.
+
+    Prova a decisão do CON-111 pelo comportamento, não pela chave. Se alguém
+    "melhorar" o prompt com contexto do jogador um dia, a chave passa a precisar
+    de `steamid` e este teste quebra — que é exatamente o alarme desejado,
+    porque o custo passaria a multiplicar por visitante sem sintoma visível.
+    """
+    outro = "76561197960287931"
+    ia = FakeAiClient(dica=Dica(texto="Use a fonte termal.", fontes=[]))
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    primeira = await service.dica(STEAMID, 10, "ACH_SPA")
+    segunda = await service.dica(outro, 10, "ACH_SPA")
+
+    assert len(ia.calls) == 1
+    assert primeira.texto == segunda.texto
+
+
+async def test_falha_da_ia_propaga_e_nao_congela_o_painel():
+    """AC-117 — erro da IA sobe, e a próxima tentativa re-tenta.
+
+    A Dica *é* o endpoint (REQ-115), diferente da raridade: engolir a falha
+    entregaria um painel vazio sem explicação. E o erro não pode ser cacheado —
+    com DICA_TTL de 7 dias, um 429 transitório da Anthropic viraria uma semana de
+    painel quebrado. As duas chamadas na IA são a prova de que re-tentou.
+    """
+    ia = FakeAiClient(dica=AiUnavailableError("provedor fora do ar"))
+    client = FakeSteamClient(
+        owned_games=[{"appid": 10, "name": "Nioh: Complete Edition", "playtime_forever": 60}],
+        achievements={10: [{"apiname": "ACH_SPA", "achieved": 0}]},
+        schemas_en={10: {"achievements": [{"name": "ACH_SPA", "displayName": "Spa Healer"}]}},
+    )
+    service = make_service(client, ai=ia)
+
+    with pytest.raises(AiUnavailableError):
+        await service.dica(STEAMID, 10, "ACH_SPA")
+    with pytest.raises(AiUnavailableError):
+        await service.dica(STEAMID, 10, "ACH_SPA")
+
+    assert len(ia.calls) == 2

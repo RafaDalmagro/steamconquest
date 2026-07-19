@@ -1,6 +1,6 @@
 ---
 title: Cache Negativo de Falha Transitória — Especificação de Comportamento
-version: 1.0
+version: 1.1
 date_created: 2026-07-19
 last_updated: 2026-07-19
 owner: rafa.limadalmagro
@@ -30,6 +30,14 @@ resposta. Alvo de latência: carga quente da biblioteca em **~0,1 s**.
 Esta spec **não** altera nenhum contrato HTTP, nenhum modelo de domínio e nenhuma
 tela.
 
+> **v1.1** — a v1.0 incluía `AiUnavailableError` e `AiRateLimitError` no conjunto
+> guardado, afirmando que eram "retentadas". A validação contra o código mostrou
+> que **não são**: `app/ai/base.py` tem apenas um `TokenBucket`, sem `sleep` e sem
+> retry. Pior, o `AiRateLimitError` de `base.py` vem do bucket local, que se
+> recupera sozinho por refill — guardá-lo por 60 s prolongaria um bloqueio em vez
+> de evitar uma espera. As duas saíram do conjunto (ver CON-141 e GUD-140). A v1.0
+> também descrevia errado o mecanismo de `_app_genres` (CON-145).
+
 ## 1. Purpose & Scope
 
 **Propósito:** definir, de forma não ambígua, quando uma falha de fetch é
@@ -37,8 +45,14 @@ guardada no cache, por quanto tempo, o que acontece na leitura seguinte e quais
 falhas ficam explicitamente de fora.
 
 **Escopo:** o helper `_cached()` de `app/services/achievements.py` e **todos** os
-seus chamadores atuais — `_owned_games`, `_schema`, `_schema_en`, `_app_genres`,
-`_global_percentages`, `_player_achievements` e `dica`.
+seus sete chamadores atuais — `_owned_games`, `_schema`, `_schema_en`,
+`_app_genres`, `_global_percentages`, `_player_achievements` e `dica`.
+
+Dos sete, a guarda só chega a disparar em **três**: `_owned_games`, `_schema` e
+`_player_achievements`. Os outros quatro nunca levantam do `fetch` (CON-145) ou
+levantam apenas exceções fora do conjunto guardado (`dica`, CON-141). Isso é
+consequência do desenho, não uma lacuna — a guarda mora no helper justamente para
+não precisar saber quem são os três.
 
 **Fora de escopo** (ver CON-140 e CON-141): o helper `_cached_ou_ausente()`, a
 camada `steam/`, a camada `ai/`, o `TTLCache`, as rotas, o SPA.
@@ -77,10 +91,10 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   objeto vive no cache por até `FALHA_TTL`.
 
 - **REQ-142**: O conjunto de exceções guardadas é **fechado e explícito**:
-  `SteamUnavailableError`, `SteamRateLimitError`, `AiUnavailableError` e
-  `AiRateLimitError`. Qualquer outra exceção propaga sem ser guardada, como
-  hoje. O critério que define o conjunto é **"o fetch paga retry com
-  backoff"** — ver GUD-140.
+  `SteamUnavailableError` e `SteamRateLimitError`. Qualquer outra exceção propaga
+  sem ser guardada, como hoje. O critério que define o conjunto é **"o fetch paga
+  retry com backoff"**, e no código de hoje isso significa exatamente **"o fetch
+  passa por `SteamClient._get()`"** — ver GUD-140.
 
 - **REQ-143**: A sentinela de falha usa a constante `FALHA_TTL = 60` (segundos),
   **independente** do `ttl` do valor de sucesso daquela chave. Uma falha em
@@ -105,10 +119,27 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   segunda é um contratempo. Se `player_summary`/`vanity` passarem a custar
   backoff de forma perceptível, é ciclo SDD próprio.
 
-- **CON-141**: `DicaSemOrcamento` **não** é guardada, apesar de ser `AiError`.
-  Orçamento diário esgotado não é retentado, portanto não custa backoff — não há
-  latência a economizar. Guardá-la também seria inócuo: o orçamento só se
-  restabelece no dia seguinte, muito além de `FALHA_TTL`.
+- **CON-141**: **Nenhuma** falha da camada `ai/` é guardada —
+  `AiUnavailableError`, `AiRateLimitError` e `DicaSemOrcamento` ficam todas de
+  fora, embora a chave `dica:{provedor}:{appid}:{apiname}` seja servida pelo
+  `_cached()`. Três razões, em ordem de peso:
+  1. **Não há backoff a economizar.** `app/ai/base.py` não retenta e não dorme:
+     tem apenas um `TokenBucket`. A espera de 3,5 s que motiva esta spec existe
+     só em `SteamClient._get()`.
+  2. **Guardar `AiRateLimitError` seria uma regressão.** Ele é levantado por duas
+     fontes indistinguíveis pelo tipo: o 429 do SDK e a recusa do **token bucket
+     local** (`base.py`). O bucket **se recupera sozinho** por refill (com
+     `ai_rate_per_minute=2.0`, em ~30 s). Guardá-lo por `FALHA_TTL` converteria um
+     bloqueio auto-resolvido em ~30 s num bloqueio garantido de 60 s — na única
+     feature paga do app.
+  3. **`DicaSemOrcamento` é gate, não falha de fetch.** Não toca a rede, não
+     retenta, e só se restabelece no dia seguinte — muito além de `FALHA_TTL`.
+
+  Consequência aceita: uma Anthropic/Gemini em 5xx continua sendo re-consultada a
+  cada clique. Custo real disso é **zero em dinheiro** (a chamada falha antes de
+  gerar token) e a latência é a do SDK, não a de um backoff nosso. Se a camada
+  `ai/` **ganhar** retry com backoff no futuro, este CON deve ser reaberto — e o
+  GUD-140 diz como decidir.
 
 - **CON-142**: A sentinela de falha **nunca** pode ser devolvida a um chamador
   nem escapar do `_cached()` como valor. Um chamador que receba a sentinela como
@@ -123,11 +154,20 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   jogo cuja conquista falhou (agora vindo do cache) continua sem `percent`,
   `achieved_count` e `total_count`, e **não** derruba a biblioteca.
 
-- **CON-145**: `_global_percentages` e `_app_genres` capturam o erro **dentro**
-  do próprio `buscar()` e devolvem `{}`/`[]`, portanto na prática nunca chegam a
-  levantar do `fetch`. A guarda não altera o comportamento deles; a sentinela
-  simplesmente não é acionada nesses caminhos. Isto é constatação, não requisito
-  — não escrever código para forçá-lo.
+- **CON-145**: Três chamadores nunca chegam a levantar do `fetch`, por mecanismos
+  **diferentes** — a distinção importa porque só o primeiro grupo é decisão do
+  service:
+  - `_global_percentages` e `_schema_en` capturam `SteamError` **dentro do
+    próprio `buscar()`** e devolvem `{}`, gravado com seus TTLs de miss curtos já
+    existentes;
+  - `_app_genres` não captura nada: quem engole é o **client**
+    (`SteamClient.get_app_genres` devolve `[]` em qualquer falha e nunca levanta),
+    porque o endpoint da loja é não-oficial e instável.
+
+  Em nenhum dos três a sentinela é acionada, e nada neles deve ser alterado. Isto
+  é constatação, não requisito — não escrever código para forçá-lo. `_schema`
+  (pt-BR), ao contrário do seu irmão `_schema_en`, **propaga** e portanto é
+  coberto pela guarda.
 
 ### Segurança
 
@@ -142,7 +182,12 @@ seguinte. Assume familiaridade com `app/services/achievements.py`,
   único: **o fetch que a levanta paga retry com backoff?** Se sim, guardar
   economiza latência real. Se não, guardar só atrasa a recuperação sem ganho.
   Não usar "é transitória?" como critério isolado — é ambíguo o bastante para
-  justificar qualquer inclusão.
+  justificar qualquer inclusão, e foi o que produziu o erro da v1.0 desta spec.
+  Verificação mecânica: abrir o caminho de código e procurar um `sleep` de
+  backoff. Hoje ele existe em **um** lugar (`SteamClient._sleep`).
+  Contra-indicação adicional: se a exceção puder vir de um **gate local que se
+  recupera por si** (token bucket, orçamento), guardá-la prolonga o bloqueio em
+  vez de encurtar a espera — exclusão, não inclusão.
 
 - **PAT-140**: A guarda vive no helper compartilhado, não em cada chamador. Uma
   guarda em `_cached()` cobre os sete chamadores atuais e todos os futuros; N
@@ -171,16 +216,19 @@ async def _cached(self, key: str, ttl: int | Callable[[Any], int], fetch): ...
 
 | Exceção levantada por `fetch` | Guardada? | Motivo |
 |---|---|---|
-| `SteamUnavailableError` | Sim | 5xx/rede — retentada, custa 3,5 s |
-| `SteamRateLimitError` | Sim | 429 — retentada, custa 3,5 s; e re-bater numa Steam que pediu pausa é contraproducente |
-| `AiUnavailableError` | Sim | 5xx/rede do provedor de IA — retentada |
-| `AiRateLimitError` | Sim | 429 do provedor ou teto local — retentada |
-| `SteamDataUnavailable` | Não | 401/403, não retentada; guardar atrasaria em até 60 s o app perceber que o perfil virou público |
+| `SteamUnavailableError` | Sim | 5xx/rede em `_get()` — retentada, custa 3,5 s |
+| `SteamRateLimitError` | Sim | 429 em `_get()` — retentada, custa 3,5 s; e re-bater numa Steam que pediu pausa é contraproducente |
+| `SteamDataUnavailable` | Não | 401/403, **não** retentada (o `_get()` levanta na hora); guardar atrasaria em até 60 s o app perceber que o perfil virou público |
 | `SteamProfileNotFound` | Não | corpo vazio, não retentada; e `_cached_ou_ausente` já trata este caso onde ele ocorre |
 | `SteamVanityNotFound` | Não | idem |
-| `DicaSemOrcamento` | Não | CON-141 |
+| `AiUnavailableError` | Não | a camada `ai/` não retenta e não dorme — não há backoff a economizar (CON-141) |
+| `AiRateLimitError` | Não | idem, e pode vir do token bucket local, que se recupera por refill: guardar **prolongaria** o bloqueio (CON-141) |
+| `DicaSemOrcamento` | Não | gate, não falha de fetch; não toca a rede (CON-141) |
 | `DicaIndisponivel` | Não | ausência é a resposta, não falha; não toca a rede |
 | Qualquer outra | Não | conjunto fechado (REQ-142) |
+
+Regra de bolso equivalente à tabela: **guarda-se o que passou por
+`SteamClient._get()`, e nada mais.**
 
 ### Tabela de TTLs — linha nova
 
@@ -224,10 +272,17 @@ sim por natureza do resultado**:
   falso **não** recebe nenhuma chamada de conquistas, e o jogo em falha continua
   vindo com `percent: None`.
 
-- **AC-147**: Given um `fetch` que levanta `AiRateLimitError` para a chave
-  `dica:{provedor}:{appid}:{apiname}` (cujo TTL de valor é 7 dias), When o
-  relógio avança 61 s, Then a chamada seguinte invoca o `fetch` novamente — a
-  falha expira por `FALHA_TTL`, nunca pelo TTL do valor.
+- **AC-147**: Given um `fetch` que levanta `SteamUnavailableError` para a chave
+  `schema:{appid}` (cujo TTL de valor é `SCHEMA_TTL`, 24 h), When o relógio avança
+  61 s, Then a chamada seguinte invoca o `fetch` novamente — a falha expira por
+  `FALHA_TTL`, nunca pelo TTL do valor. Este é o teste que trava a
+  independência do REQ-143.
+
+- **AC-148**: Given um `fetch` que levanta `AiRateLimitError` para a chave
+  `dica:{provedor}:{appid}:{apiname}`, When `_cached()` é chamado duas vezes,
+  Then o `fetch` é invocado **duas** vezes — nenhuma falha da camada `ai/` é
+  guardada (CON-141). Este teste existe para que uma inclusão futura de
+  `AiRateLimitError` no conjunto quebre um teste em vez de passar despercebida.
 
 ## 6. Test Automation Strategy
 
@@ -241,11 +296,16 @@ sim por natureza do resultado**:
   (`TTLCache(now=lambda: agora)`), que já é testável por construção. **Não usar**
   `asyncio.sleep` nem `time.sleep` para atravessar o `FALHA_TTL`.
 - **Interface pública:** os testes de AC-145 e AC-146 exercitam `game_detail` e
-  `list_library`. Os de AC-140..144 e AC-147 exercitam `_cached()` através de um
-  chamador real (`_player_achievements`, `dica`), não invocando `_cached`
-  diretamente — testar o helper por dentro fixaria detalhe de implementação.
+  `list_library`. Os de AC-140..144, AC-147 e AC-148 exercitam `_cached()` através
+  de um chamador real (`_player_achievements`, `_schema`, `dica`), **nunca**
+  invocando `_cached` diretamente — testar o helper por dentro fixaria detalhe de
+  implementação e quebraria a regra de testes pela interface pública do
+  `CLAUDE.md`.
+- **Teste de regressão de escopo:** o AC-148 existe para falhar caso alguém
+  reintroduza as exceções de IA no conjunto guardado. Não removê-lo por parecer
+  redundante — ele é o guarda-corpo do erro que a v1.0 desta spec cometeu.
 - **CI:** `uv run pytest` no job de backend do GitHub Actions, sem segredos novos.
-- **Ordem RED/GREEN:** um AC por ciclo, na ordem AC-140 → AC-147. Proibido
+- **Ordem RED/GREEN:** um AC por ciclo, na ordem AC-140 → AC-148. Proibido
   escrever mais de um teste antes de implementar.
 
 ## 7. Rationale & Context
@@ -268,9 +328,22 @@ mentira por `ACH_TTL`. Daí o AC-145.
 **Por que `FALHA_TTL` é independente do TTL do valor.** O `CLAUDE.md` já registra
 o perigo na Dica: com TTL de 7 dias, cachear um 429 transitório congelaria o
 painel quebrado por uma semana. Amarrar a falha ao TTL do valor reintroduziria
-exatamente esse defeito, agora em todas as chaves de TTL longo (`schema`,
-`genres`, `global_pct`, `dica`). Um TTL próprio e curto é o que torna a guarda
-segura em chaves cujo valor é praticamente estático.
+exatamente esse defeito nas chaves de TTL longo servidas pelo `_cached()` —
+`schema` e `schema_en` (24 h), `genres` (7 dias), `global_pct` (24 h). Um TTL
+próprio e curto é o que torna a guarda segura em chaves cujo valor é praticamente
+estático. O AC-147 trava isso com a chave de 24 h.
+
+**Por que nenhuma falha de IA é guardada.** Este é o ponto onde a v1.0 desta spec
+estava errada, e o erro é instrutivo. A v1.0 aplicou o rótulo "transitória" às
+exceções de IA por analogia com as da Steam, sem abrir o código: `app/ai/base.py`
+não retenta e não dorme — só tem um `TokenBucket`. Sem backoff, guardar a falha
+não economiza espera nenhuma; e no caso do `AiRateLimitError` vindo do bucket
+local, que se recupera por refill em ~30 s, guardar por 60 s deixa o usuário
+**mais** tempo bloqueado do que se nada fosse feito. Uma "otimização" que piora o
+caso que ela diz melhorar é pior que a ausência dela, e ainda mais na única
+feature que custa dinheiro. Daí o GUD-140 ter deixado de dizer "é transitória?" e
+passado a exigir a verificação mecânica: procure o `sleep` de backoff no caminho
+de código.
 
 **Por que 60 s.** É o mesmo `NOT_FOUND_TTL` já em uso, pela mesma razão: janela
 larga o bastante para absorver a rajada de uma carga de biblioteca (que dispara
@@ -304,8 +377,10 @@ Steam e ao provedor de IA. Nenhum endpoint novo, nenhuma chamada nova.
 ### Sistemas Externos
 - **EXT-001**: Steam Web API — já integrada; nenhuma chamada nova. A mudança
   reduz o número de requisições em cenário de falha.
-- **EXT-002**: Provedor de IA ativo (Anthropic ou Gemini) — já integrado;
-  nenhuma chamada nova.
+- **EXT-002**: Provedor de IA ativo (Anthropic ou Gemini) — já integrado. Esta
+  spec **não** altera o comportamento do caminho de IA: nenhuma falha dele é
+  guardada (CON-141). Dependência listada apenas porque a chave da Dica é servida
+  pelo helper alterado.
 
 ### Dependências de Infraestrutura
 - **INF-001**: `TTLCache` em memória, volátil e por processo. Já existe, com
@@ -360,23 +435,38 @@ diferentes de propósito: a biblioteca é best-effort, o detalhe não pode menti
 
 ### Borda — falha em chave de TTL longo
 
-`dica:{provedor}:{appid}:{apiname}` tem `DICA_TTL` de 7 dias. Uma
-`AiRateLimitError` registrada em `t=0` deixa de valer em `t=60`, **não** em
-`t=604800`. Um provedor que voltou ao ar em cinco minutos volta a ser consultado
-em até um minuto.
+`schema:{appid}` tem `SCHEMA_TTL` de 24 h. Uma `SteamUnavailableError` registrada
+em `t=0` deixa de valer em `t=60`, **não** em `t=86400`. Uma Steam que voltou ao
+ar em cinco minutos volta a ser consultada em até um minuto.
 
-### Não-caso — genres e global_pct
+### Não-caso — a Dica e o resto da camada `ai/`
 
-`_app_genres` e `_global_percentages` capturam a falha dentro do próprio
-`buscar()` e devolvem `[]`/`{}`, que são gravados com seus TTLs de miss curtos já
-existentes. A sentinela nunca é acionada nesses caminhos, e nada neles deve ser
-alterado por esta spec (CON-145).
+`dica:{provedor}:{appid}:{apiname}` é servida pelo `_cached()`, mas **nenhuma**
+das suas falhas é guardada (CON-141). Duas chamadas com o provedor em 429 fazem
+duas tentativas, como hoje:
+
+```
+t=0    AiRateLimitError (bucket local recusou)  → nada é gravado, exceção propaga → 429
+t=30   bucket refez o token, leitura            → fetch é chamado, pode ter sucesso
+```
+
+Se a falha fosse guardada, a leitura de `t=30` levantaria mesmo com o bucket já
+recuperado, e o usuário esperaria até `t=60`. É o cenário que a v1.0 desta spec
+teria produzido.
+
+### Não-caso — genres, global_pct e schema_en
+
+`_global_percentages` e `_schema_en` capturam a falha dentro do próprio
+`buscar()`; `_app_genres` recebe `[]` do client, que nunca levanta. Nos três, o
+valor é gravado com o TTL de miss curto já existente e a sentinela nunca é
+acionada. Nada neles deve ser alterado por esta spec (CON-145). `_schema`
+(pt-BR) é o irmão que **não** engole e portanto **é** coberto pela guarda.
 
 ## 10. Validation Criteria
 
 A implementação está conforme quando:
 
-1. Todos os AC-140..147 têm teste correspondente e a suíte `uv run pytest` passa.
+1. Todos os AC-140..148 têm teste correspondente e a suíte `uv run pytest` passa.
 2. Nenhum teste existente foi **deletado** para acomodar a mudança. Testes
    reescritos são aceitáveis apenas se o comportamento esperado mudou de fato, e
    a mudança está justificada nesta spec ou no `ROADMAP.md`.
@@ -403,9 +493,11 @@ A implementação está conforme quando:
   cache e TTLs), REQ-053/054 (token bucket e teto de entradas), REQ-004 (fan-out
   best-effort da biblioteca).
 - `spec/spec-design-dica-conquista-ia.md` — origem do `DICA_TTL` de 7 dias e do
-  alerta sobre cachear 429 em chave de TTL longo.
+  alerta sobre cachear 429 em chave de TTL longo, que esta spec generaliza no
+  REQ-143.
 - `spec/spec-design-provedor-de-ia-plugavel.md` — origem das exceções
-  `AiUnavailableError` / `AiRateLimitError` / `DicaSemOrcamento`.
+  `AiUnavailableError` / `AiRateLimitError` / `DicaSemOrcamento` e do
+  `TokenBucket` de `app/ai/base.py`, cuja ausência de retry é a razão do CON-141.
 - `ROADMAP.md` — seção "Correções pendentes", item da latência, com a medição de
   origem.
 - `docs/adr/0001-steam-client-unico.md` — por que a camada `steam/` é o único

@@ -97,6 +97,24 @@ nos payloads existentes.
       não toca `window.location`) — daí o `capturaUrl()` novo em `test/utils.tsx`.
       ⚠️ Duas fixtures de teste **não** podem se chamar "Rara": o `AchievementItem`
       renderiza um badge com esse texto abaixo de 10%, e a busca por texto acha dois.
+- [x] **`/verify` da ordenação derivada** (19/07/2026, perfil de demonstração):
+      biblioteca com `sort=quase_la` traz os três "quase lá" no topo — Paladins
+      47/58, Tribes of Midgard 21/26, Tails of Iron 29/36. Todos exibem "81%", mas
+      os valores reais (81,03 > 80,77 > 80,56) confirmam que a ordem **dentro** do
+      grupo está certa; o arredondamento é que a esconde. Os 100% ficam fora do
+      grupo, como deve. O resumo do topo já dizia "3 jogos quase 100%" e bate
+      exatamente: resumo e eixo leem a mesma `isQuaseLa()` (CON-161 se pagando).
+      Detalhe de Tails of Iron, `filter=locked&ordem=raras`: 4,5% → 13,1% → 13,1%
+      → 15,0% → 15,4% → 15,8% → 17,6%, com o badge "Rara" na do topo. Trocar para
+      a aba Obtidas levou a URL a `?filter=achieved&ordem=faceis` — **a ordenação
+      sobreviveu**, que é a regressão da Task 2 confirmada fora do jsdom.
+      A dúvida visual ("duas barras empilhadas ficariam apertadas?") **não se
+      confirmou**: o rótulo "Ordenar:" separa bem a barra nova das abas, e os seis
+      botões da biblioteca cabem numa linha em desktop.
+      ⚠️ **Não verificado no app real:** jogo sem stats globais, onde o controle
+      deve sumir (AC-166). Varri 14 appids da biblioteca e **nenhum** tem todas as
+      conquistas sem raridade, então a condição não ocorre neste perfil. O caso
+      segue coberto só por teste unitário. Fica registrado para quem topar com um.
 
 ## Features médias (REQ-040 a REQ-042)
 
